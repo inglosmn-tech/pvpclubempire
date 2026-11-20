@@ -14,9 +14,10 @@ import random
 import re
 import tempfile
 import time
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
+import unicodedata
 from urllib.parse import quote
 
 import aiohttp
@@ -37,11 +38,11 @@ PINK = 0xFF9CEE
 CYAN = 0x55DDFB
 GREEN = 0x57D69A
 RED = 0xFF647C
-# These are duel-kit choices only; tier data always comes from MCTiers.
-MODES = ["Mace", "Sword", "Crystal", "NethPot", "Axe", "Spear", "Box", "SMP"]
 MCTIERS_API_BASE = "https://mctiers.net/api/v2"
 MCTIERS_PROFILE_CACHE_SECONDS = 60
 MCTIERS_MODES_CACHE_SECONDS = 3600
+TIER_WATCH_POLL_SECONDS = 180
+EVENT_PING_ROLE_NAME = "Event Ping"
 
 logging.basicConfig(
     level=logging.INFO,
@@ -53,7 +54,11 @@ log = logging.getLogger("pvpclub-empire")
 def default_data() -> dict[str, Any]:
     return {
         "meows": {}, "ticket_counter": 0,
-        "pets": {}, "giveaways": {}, "polls": {}
+        "pets": {}, "giveaways": {}, "polls": {},
+        "warnings": {}, "modlog_channels": {},
+        "event_settings": {}, "events": {},
+        "tier_watch_channels": {}, "tier_watchlists": {},
+        "automod_settings": {}
     }
 
 
@@ -255,11 +260,13 @@ class EmpireBot(commands.Bot):
         intents = discord.Intents.default()
         intents.message_content = True
         intents.members = True
-        super().__init__(command_prefix="!", intents=intents)
+        super().__init__(command_prefix=("?", "!"), intents=intents, case_insensitive=True)
         self.store = DataStore(DATA_FILE)
         self.session: aiohttp.ClientSession | None = None
         self.meow_recent: dict[int, list[tuple[int, float]]] = {}
-        self.duel_sessions: dict[str, dict] = {}
+        self.meow_webhooks: dict[int, discord.Webhook] = {}
+        self.event_sticky_locks: dict[int, asyncio.Lock] = {}
+        self.automod_recent_messages: dict[tuple[int, int], list[tuple[float, str]]] = {}
         self.mctiers_profile_cache: dict[str, tuple[float, dict[str, Any]]] = {}
         self.mctiers_profile_locks: dict[str, asyncio.Lock] = {}
         self.mctiers_modes_cache: tuple[float, dict[str, str]] | None = None
@@ -279,16 +286,16 @@ class EmpireBot(commands.Bot):
         # Persistent views have stable custom IDs and no timeout.
         self.add_view(TicketPanelView())
         self.add_view(TicketControlsView())
-        self.add_view(FakeBanView())
         self.add_view(GiveawayView())
-        self.add_view(DuelInviteView())
-        self.add_view(DuelResultView())
+        self.add_view(EventSignupView())
+        self.add_view(EventPingPanelView())
         try:
             synced = await self.tree.sync()
             log.info("Synced %d application commands.", len(synced))
         except discord.HTTPException:
             log.exception("Slash-command sync failed.")
         self.giveaway_watcher.start()
+        self.tier_watch_watcher.start()
 
     async def _mctiers_get(self, route: str) -> Any:
         """GET a route documented under https://mctiers.net/docs/v2."""
@@ -389,6 +396,26 @@ class EmpireBot(commands.Bot):
             )
             return names
 
+    async def get_meow_webhook(self, channel: discord.TextChannel) -> discord.Webhook:
+        """Return the bot-owned meow webhook for a channel, creating it if needed."""
+        cached = self.meow_webhooks.get(channel.id)
+        if cached is not None:
+            return cached
+
+        if not self.user:
+            raise RuntimeError("The bot user is not ready yet.")
+        for webhook in await channel.webhooks():
+            if (webhook.name == "PVPClub Meow" and webhook.user
+                    and webhook.user.id == self.user.id):
+                self.meow_webhooks[channel.id] = webhook
+                return webhook
+
+        webhook = await channel.create_webhook(
+            name="PVPClub Meow", reason="PVPClub Empire /makemeow feature"
+        )
+        self.meow_webhooks[channel.id] = webhook
+        return webhook
+
     async def start_status_site(self):
         """Expose a tiny status website on Render's assigned PORT."""
         async def homepage(request: web.Request):
@@ -453,6 +480,83 @@ class EmpireBot(commands.Bot):
     async def before_giveaway_watcher(self):
         await self.wait_until_ready()
 
+    @tasks.loop(seconds=TIER_WATCH_POLL_SECONDS)
+    async def tier_watch_watcher(self):
+        """Poll watched MCTiers profiles and announce only documented profile changes."""
+        for guild_id_text, watchlist in list(self.store.data.get("tier_watchlists", {}).items()):
+            try:
+                guild_id = int(guild_id_text)
+            except (TypeError, ValueError):
+                continue
+            guild = self.get_guild(guild_id)
+            channel_id = self.store.data.get("tier_watch_channels", {}).get(guild_id_text)
+            channel = guild.get_channel(int(channel_id)) if guild and channel_id else None
+            if not guild or not isinstance(channel, discord.TextChannel) or not isinstance(watchlist, dict):
+                continue
+
+            for player_key, watch in list(watchlist.items()):
+                if not isinstance(watch, dict) or not isinstance(watch.get("username"), str):
+                    continue
+                try:
+                    profile = await self.get_mctiers_profile(watch["username"])
+                    await asyncio.sleep(1.0)
+                    current = snapshot_mctiers_rankings(profile.get("rankings", {}))
+                    previous = watch.get("snapshot", {})
+                    if not isinstance(previous, dict):
+                        previous = {}
+                    changes = tierwatch_deltas(previous, current)
+                    if not changes:
+                        # Refresh the snapshot to retain newly documented metadata without announcing it.
+                        if current != previous:
+                            watch["snapshot"] = current
+                            watch["username"] = profile.get("name", watch["username"])
+                            await self.store.save()
+                        continue
+
+                    try:
+                        mode_names = await self.get_mctiers_gamemodes()
+                    except (MCTiersAPIError, aiohttp.ClientError, asyncio.TimeoutError):
+                        mode_names = {}
+
+                    player_name = profile.get("name") or watch["username"]
+                    e = embed(f"🏆 MCTiers update • {player_name}",
+                              "A watched player's official MCTiers profile changed.", GREEN)
+                    e.set_footer(text="Official MCTiers API v2 • profile polling; not an instant test feed")
+                    for delta in changes[:20]:
+                        title = mode_names.get(delta["mode"], delta["mode"])
+                        old_item, new_item, kind = delta["old"], delta["new"], delta["kind"]
+                        old_value = mctiers_tier_code(old_item.get("tier"), old_item.get("pos")) if old_item else "Not available"
+                        new_value = mctiers_tier_code(new_item.get("tier"), new_item.get("pos")) if new_item else "Not available"
+                        label = "New tier added" if kind == "added" else ("Tier/test record updated" if kind == "attained" else "Tier changed")
+                        details = f"**Previous:** `{old_value}`\n**Current:** `{new_value}`"
+                        retired = new_item.get("retired") if new_item else None
+                        if retired is not None:
+                            details += f"\n**Retired:** {'Yes' if retired else 'No'}"
+                        e.add_field(name=f"{title} • {label}", value=details, inline=True)
+                    try:
+                        await channel.send(embed=e, allowed_mentions=discord.AllowedMentions.none())
+                    except discord.HTTPException:
+                        log.exception("Could not post Tierwatch update for %s in guild %s", player_name, guild_id)
+                        continue
+
+                    watch["snapshot"] = current
+                    watch["username"] = player_name
+                    await self.store.save()
+                except MCTiersPlayerNotFound:
+                    await asyncio.sleep(1.0)
+                    log.info("Tierwatch profile no longer resolves: %s", watch.get("username"))
+                except MCTiersRateLimited:
+                    log.warning("MCTiers rate limit reached while polling Tierwatch; pausing this cycle.")
+                    return
+                except (MCTiersAPIError, aiohttp.ClientError, asyncio.TimeoutError) as exc:
+                    log.warning("Tierwatch lookup failed for %s: %s", watch.get("username"), exc)
+                except Exception:
+                    log.exception("Unexpected Tierwatch error for %s", watch.get("username"))
+
+    @tier_watch_watcher.before_loop
+    async def before_tier_watch_watcher(self):
+        await self.wait_until_ready()
+
 
 bot = EmpireBot()
 
@@ -480,6 +584,502 @@ async def ensure_meow_role(guild: discord.Guild):
     return None
 
 
+async def ensure_event_ping_role(guild: discord.Guild) -> discord.Role | None:
+    role = discord.utils.get(guild.roles, name=EVENT_PING_ROLE_NAME)
+    bot_member = guild.me
+    if role:
+        if bot_member is None or role >= bot_member.top_role:
+            log.warning("Event Ping role is above the bot in guild %s", guild.id)
+            return None
+        if not role.mentionable:
+            try:
+                await role.edit(mentionable=True, reason="Enable Event Ping mentions")
+            except discord.HTTPException:
+                log.exception("Could not make Event Ping role mentionable in guild %s", guild.id)
+                return None
+        return role
+    try:
+        role = await guild.create_role(
+            name=EVENT_PING_ROLE_NAME,
+            color=discord.Color(PINK),
+            mentionable=True,
+            reason="PVPClub Empire event notification opt-in role",
+        )
+        bot_member = guild.me
+        if bot_member and bot_member.top_role > role:
+            await role.edit(position=max(1, bot_member.top_role.position - 1))
+        return role
+    except (discord.Forbidden, discord.HTTPException):
+        log.exception("Could not create Event Ping role in guild %s", guild.id)
+        return None
+
+
+def event_sticky_embed() -> discord.Embed:
+    return embed(
+        "🔔 Event notifications",
+        "Want to hear about upcoming PVPClub Empire events?\n\n"
+        "Use **Get Event Ping** to receive the `Event Ping` role, or **Remove Event Ping** "
+        "to stop receiving event mentions. You can change this whenever you like.",
+        PINK,
+    )
+
+
+async def refresh_event_sticky(channel: discord.TextChannel):
+    """Move the event opt-in panel back to the bottom after a new member message."""
+    guild_id_text = str(channel.guild.id)
+    settings = bot.store.data.get("event_settings", {}).get(guild_id_text)
+    if not isinstance(settings, dict) or int(settings.get("channel_id", 0) or 0) != channel.id:
+        return
+    lock = bot.event_sticky_locks.setdefault(channel.id, asyncio.Lock())
+    async with lock:
+        settings = bot.store.data.get("event_settings", {}).get(guild_id_text, {})
+        old_id = settings.get("sticky_message_id")
+        if old_id:
+            try:
+                old_message = await channel.fetch_message(int(old_id))
+                await old_message.delete()
+            except (discord.NotFound, discord.Forbidden, discord.HTTPException, ValueError):
+                pass
+        try:
+            new_message = await channel.send(embed=event_sticky_embed(), view=EventPingPanelView())
+        except discord.HTTPException:
+            log.exception("Could not refresh Event Ping sticky panel in channel %s", channel.id)
+            return
+        settings["sticky_message_id"] = new_message.id
+        await bot.store.save()
+
+
+class EventPingPanelView(discord.ui.View):
+    def __init__(self):
+        super().__init__(timeout=None)
+
+    async def _role_action(self, interaction: discord.Interaction, add: bool):
+        guild = interaction.guild
+        if guild is None or not isinstance(interaction.user, discord.Member):
+            await interaction.response.send_message("This button only works in a server.", ephemeral=True)
+            return
+        settings = bot.store.data.get("event_settings", {}).get(str(guild.id), {})
+        role_id = settings.get("role_id") if isinstance(settings, dict) else None
+        role = guild.get_role(int(role_id)) if role_id else None
+        if role is None:
+            role = await ensure_event_ping_role(guild)
+        if role is None:
+            await interaction.response.send_message(
+                "I cannot access the Event Ping role. Please ask an administrator to give me Manage Roles and move my role higher.",
+                ephemeral=True,
+            )
+            return
+        if add:
+            if role in interaction.user.roles:
+                text = "You already have the Event Ping role."
+            else:
+                try:
+                    await interaction.user.add_roles(role, reason="Member opted into PVPClub event announcements")
+                    text = "🔔 You will now receive Event Ping announcements."
+                except discord.Forbidden:
+                    text = "I cannot assign that role. Please check my Manage Roles permission and role position."
+        else:
+            if role not in interaction.user.roles:
+                text = "You do not currently have the Event Ping role."
+            else:
+                try:
+                    await interaction.user.remove_roles(role, reason="Member opted out of PVPClub event announcements")
+                    text = "🔕 Event Ping removed. You will no longer receive that role's mentions."
+                except discord.Forbidden:
+                    text = "I cannot remove that role. Please check my Manage Roles permission and role position."
+        await interaction.response.send_message(text, ephemeral=True)
+
+    @discord.ui.button(label="🔔 Get Event Ping", style=discord.ButtonStyle.success, custom_id="eventping:get")
+    async def get_event_ping(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await self._role_action(interaction, True)
+
+    @discord.ui.button(label="🔕 Remove Event Ping", style=discord.ButtonStyle.secondary, custom_id="eventping:remove")
+    async def remove_event_ping(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await self._role_action(interaction, False)
+
+
+class EventSignupView(discord.ui.View):
+    def __init__(self):
+        super().__init__(timeout=None)
+
+    async def _signup(self, interaction: discord.Interaction, joining: bool):
+        if interaction.message is None or interaction.guild is None:
+            await interaction.response.send_message("This event signup is unavailable.", ephemeral=True)
+            return
+        event = bot.store.data.get("events", {}).get(str(interaction.message.id))
+        if not isinstance(event, dict) or event.get("closed"):
+            await interaction.response.send_message("This event signup is closed or no longer available.", ephemeral=True)
+            return
+        participants = event.setdefault("participants", [])
+        user_id = interaction.user.id
+        if joining:
+            if user_id in participants:
+                await interaction.response.send_message("You are already signed up.", ephemeral=True)
+                return
+            participants.append(user_id)
+            response_text = "✅ You are signed up for this event!"
+        else:
+            if user_id not in participants:
+                await interaction.response.send_message("You are not signed up for this event.", ephemeral=True)
+                return
+            participants.remove(user_id)
+            response_text = "Your event signup has been removed."
+        await bot.store.save()
+        event_embed = build_event_embed(event)
+        await interaction.response.edit_message(embed=event_embed, view=self)
+        await interaction.followup.send(response_text, ephemeral=True)
+
+    @discord.ui.button(label="✅ Sign up", style=discord.ButtonStyle.success, custom_id="event:signup")
+    async def signup(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await self._signup(interaction, True)
+
+    @discord.ui.button(label="↩️ Leave event", style=discord.ButtonStyle.secondary, custom_id="event:leave")
+    async def leave(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await self._signup(interaction, False)
+
+
+def build_event_embed(event: dict[str, Any]) -> discord.Embed:
+    name = discord.utils.escape_markdown(str(event.get("name", "PVPClub event")))[:200]
+    host_id = event.get("host_id")
+    host_text = f"<@{host_id}>" if isinstance(host_id, int) else "Not available"
+    description = str(event.get("description", "No description provided."))[:1000]
+    when = str(event.get("when", "Not specified"))[:100]
+    participants = event.get("participants", [])
+    if not isinstance(participants, list):
+        participants = []
+    shown = [f"<@{uid}>" for uid in participants[:20] if isinstance(uid, int)]
+    signup_list = "\n".join(shown) if shown else "No one has signed up yet. Be the first!"
+    if len(participants) > 20:
+        signup_list += f"\n…and {len(participants) - 20} more."
+    e = embed(f"🎉 {name}", description, PINK)
+    e.add_field(name="Host", value=host_text, inline=True)
+    e.add_field(name="When", value=when, inline=True)
+    e.add_field(name=f"Signups ({len(participants)})", value=signup_list[:1024], inline=False)
+    e.set_footer(text="PVPClub Empire • Use the buttons to join or leave")
+    return e
+
+
+@bot.command(name="eventsetup")
+@commands.guild_only()
+@commands.has_guild_permissions(manage_guild=True)
+@commands.bot_has_guild_permissions(view_channel=True, send_messages=True, embed_links=True, manage_roles=True)
+async def eventsetup(ctx: commands.Context, eventchannel: discord.TextChannel):
+    """Configure the event channel and create the Event Ping opt-in panel."""
+    if ctx.guild is None:
+        return
+    role = await ensure_event_ping_role(ctx.guild)
+    if role is None:
+        await ctx.reply("I couldn't create the `Event Ping` role. Give me Manage Roles and move my role above it.", mention_author=False)
+        return
+    bot_member = ctx.guild.me
+    perms = eventchannel.permissions_for(bot_member) if bot_member else None
+    if not perms or not perms.send_messages or not perms.embed_links:
+        await ctx.reply("I need Send Messages and Embed Links in that event channel.", mention_author=False)
+        return
+    settings = bot.store.data.setdefault("event_settings", {}).setdefault(str(ctx.guild.id), {})
+    previous_channel = ctx.guild.get_channel(int(settings.get("channel_id", 0) or 0))
+    previous_id = settings.get("sticky_message_id")
+    if isinstance(previous_channel, discord.TextChannel) and previous_id:
+        try:
+            previous_sticky = await previous_channel.fetch_message(int(previous_id))
+            await previous_sticky.delete()
+        except (discord.NotFound, discord.Forbidden, discord.HTTPException, ValueError):
+            pass
+    settings.update({"channel_id": eventchannel.id, "role_id": role.id, "sticky_message_id": None})
+    await bot.store.save()
+    try:
+        sticky = await eventchannel.send(embed=event_sticky_embed(), view=EventPingPanelView())
+    except discord.HTTPException:
+        await ctx.reply("I saved the event channel, but couldn't send the sticky panel. Check my channel permissions.", mention_author=False)
+        return
+    settings["sticky_message_id"] = sticky.id
+    await bot.store.save()
+    await ctx.reply(f"✅ Events will be posted in {eventchannel.mention}. Created/verified {role.mention} and posted the sticky opt-in panel.", mention_author=False, allowed_mentions=discord.AllowedMentions.none())
+
+
+@bot.tree.command(name="event", description="Create a community event in the configured event channel.")
+@app_commands.guild_only()
+@app_commands.describe(name_event="Event name", when="Optional date/time", description="What will happen at the event")
+@app_commands.checks.cooldown(1, 30.0, key=lambda i: (i.guild_id, i.user.id))
+async def event(interaction: discord.Interaction, name_event: app_commands.Range[str, 1, 100], when: str = "Not specified", description: str = "Join us for a PVPClub Empire event!"):
+    guild = interaction.guild
+    if guild is None:
+        await interaction.response.send_message("Events can only be created inside a server.", ephemeral=True)
+        return
+    settings = bot.store.data.get("event_settings", {}).get(str(guild.id), {})
+    channel_id = settings.get("channel_id") if isinstance(settings, dict) else None
+    channel = guild.get_channel(int(channel_id)) if channel_id else None
+    if not isinstance(channel, discord.TextChannel):
+        await interaction.response.send_message("An administrator must configure the event channel first with `?eventsetup #channel`.", ephemeral=True)
+        return
+    role = guild.get_role(int(settings.get("role_id", 0) or 0)) or await ensure_event_ping_role(guild)
+    if role is None:
+        await interaction.response.send_message("I couldn't find or create the Event Ping role.", ephemeral=True)
+        return
+    bot_member = guild.me
+    permissions = channel.permissions_for(bot_member) if bot_member else None
+    if not permissions or not permissions.send_messages or not permissions.embed_links:
+        await interaction.response.send_message("I cannot post in the configured event channel. Check my channel permissions.", ephemeral=True)
+        return
+    event_data = {
+        "guild_id": guild.id,
+        "channel_id": channel.id,
+        "name": name_event.strip(),
+        "when": when.strip()[:100] or "Not specified",
+        "description": description.strip()[:1000] or "No description provided.",
+        "host_id": interaction.user.id,
+        "participants": [],
+        "created_at": int(time.time()),
+        "closed": False,
+    }
+    await interaction.response.defer(ephemeral=True, thinking=True)
+    try:
+        message = await channel.send(
+            content=role.mention,
+            embed=build_event_embed(event_data),
+            view=EventSignupView(),
+            allowed_mentions=discord.AllowedMentions(roles=[role]),
+        )
+    except discord.HTTPException:
+        await interaction.followup.send("I couldn't publish the event. Check the bot's channel permissions.", ephemeral=True)
+        return
+    bot.store.data.setdefault("events", {})[str(message.id)] = event_data
+    await bot.store.save()
+    # Keep the Event Ping opt-in panel as the last message in the channel.
+    await refresh_event_sticky(channel)
+    await interaction.followup.send(f"🎉 Your event **{discord.utils.escape_markdown(name_event)}** was posted in {channel.mention} and the Event Ping role was mentioned.", ephemeral=True)
+
+
+@bot.command(name="tierwatchsetup")
+@commands.guild_only()
+@commands.has_guild_permissions(manage_guild=True)
+@commands.bot_has_guild_permissions(view_channel=True, send_messages=True, embed_links=True)
+async def tierwatchsetup(ctx: commands.Context, tier_announcements_channel: discord.TextChannel):
+    """Set the channel that receives official MCTiers watchlist change alerts."""
+    if ctx.guild is None:
+        return
+    bot_member = ctx.guild.me
+    perms = tier_announcements_channel.permissions_for(bot_member) if bot_member else None
+    if not perms or not perms.send_messages or not perms.embed_links:
+        await ctx.reply("I need Send Messages and Embed Links in that announcements channel.", mention_author=False)
+        return
+    bot.store.data.setdefault("tier_watch_channels", {})[str(ctx.guild.id)] = tier_announcements_channel.id
+    await bot.store.save()
+    await ctx.reply(f"✅ Official MCTiers watch announcements will be sent to {tier_announcements_channel.mention}.", mention_author=False)
+
+
+@eventsetup.error
+async def eventsetup_error(ctx: commands.Context, error: commands.CommandError):
+    if isinstance(error, commands.MissingPermissions):
+        await ctx.reply("You need Manage Server to configure the event channel.", mention_author=False)
+    elif isinstance(error, commands.BotMissingPermissions):
+        await ctx.reply("I need Manage Roles, View Channel, Send Messages and Embed Links.", mention_author=False)
+    elif isinstance(error, commands.BadArgument):
+        await ctx.reply("Usage: `?eventsetup #event-channel`", mention_author=False)
+    else:
+        log.exception("?eventsetup failed", exc_info=error)
+        await ctx.reply("I couldn't configure the event channel. Check my permissions and try again.", mention_author=False)
+
+
+@tierwatchsetup.error
+async def tierwatchsetup_error(ctx: commands.Context, error: commands.CommandError):
+    if isinstance(error, commands.MissingPermissions):
+        await ctx.reply("You need Manage Server to configure Tierwatch announcements.", mention_author=False)
+    elif isinstance(error, commands.BotMissingPermissions):
+        await ctx.reply("I need View Channel, Send Messages and Embed Links in that channel.", mention_author=False)
+    elif isinstance(error, commands.BadArgument):
+        await ctx.reply("Usage: `?tierwatchsetup #tier-announcements`", mention_author=False)
+    else:
+        log.exception("?tierwatchsetup failed", exc_info=error)
+        await ctx.reply("I couldn't configure the Tierwatch channel. Check my permissions and try again.", mention_author=False)
+
+
+@bot.tree.command(name="tierwatch", description="Add a Minecraft player to the official MCTiers change watchlist.")
+@app_commands.guild_only()
+@app_commands.describe(username="Minecraft username to watch")
+@app_commands.checks.cooldown(5, 60.0, key=lambda i: i.guild_id)
+async def tierwatch(interaction: discord.Interaction, username: str):
+    guild = interaction.guild
+    if guild is None:
+        await interaction.response.send_message("Tierwatch only works inside a server.", ephemeral=True)
+        return
+    if str(guild.id) not in bot.store.data.get("tier_watch_channels", {}):
+        await interaction.response.send_message("An administrator must first run `?tierwatchsetup #channel`.", ephemeral=True)
+        return
+    await interaction.response.defer(ephemeral=True, thinking=True)
+    try:
+        profile = await bot.get_mctiers_profile(username)
+    except ValueError as exc:
+        await interaction.followup.send(f"Invalid Minecraft username: {exc}", ephemeral=True)
+        return
+    except MCTiersPlayerNotFound:
+        await interaction.followup.send(f"No MCTiers profile was found for **{discord.utils.escape_markdown(username)}**.", ephemeral=True)
+        return
+    except (MCTiersAPIError, aiohttp.ClientError, asyncio.TimeoutError):
+        await interaction.followup.send("The official MCTiers API is temporarily unavailable. Try again later.", ephemeral=True)
+        return
+
+    canonical_name = str(profile.get("name", username))
+    uuid = profile.get("uuid")
+    key = str(uuid).casefold() if isinstance(uuid, str) and uuid else canonical_name.casefold()
+    watchlist = bot.store.data.setdefault("tier_watchlists", {}).setdefault(str(guild.id), {})
+    if key in watchlist:
+        await interaction.followup.send(f"**{canonical_name}** is already being watched in this server.", ephemeral=True)
+        return
+    if len(watchlist) >= 50:
+        await interaction.followup.send("This server has reached the 50-player Tierwatch limit.", ephemeral=True)
+        return
+    baseline = snapshot_mctiers_rankings(profile.get("rankings", {}))
+    watchlist[key] = {
+        "username": canonical_name,
+        "uuid": uuid if isinstance(uuid, str) else None,
+        "snapshot": baseline,
+        "added_by": interaction.user.id,
+        "added_at": int(time.time()),
+    }
+    await bot.store.save()
+    await interaction.followup.send(
+        f"✅ **{discord.utils.escape_markdown(canonical_name)}** is now on this server's Tierwatch list. "
+        "I saved their current official profile as the baseline, so only future changes will be announced.",
+        ephemeral=True,
+    )
+
+
+@bot.tree.command(name="tierunwatch", description="Remove a Minecraft player from this server's Tierwatch list.")
+@app_commands.guild_only()
+async def tierunwatch(interaction: discord.Interaction, username: str):
+    guild = interaction.guild
+    if guild is None:
+        await interaction.response.send_message("Tierwatch only works inside a server.", ephemeral=True)
+        return
+    watchlist = bot.store.data.get("tier_watchlists", {}).get(str(guild.id), {})
+    target = username.casefold()
+    match = next((key for key, item in watchlist.items()
+                  if key.casefold() == target or str(item.get("username", "")).casefold() == target
+                  or str(item.get("uuid", "")).casefold() == target), None)
+    if match is None:
+        await interaction.response.send_message("That player is not on this server's Tierwatch list.", ephemeral=True)
+        return
+    watchlist.pop(match, None)
+    await bot.store.save()
+    await interaction.response.send_message(f"Removed **{discord.utils.escape_markdown(username)}** from Tierwatch.", ephemeral=True)
+
+
+@bot.tree.command(name="tierwatchlist", description="Show this server's MCTiers Tierwatch list.")
+@app_commands.guild_only()
+async def tierwatchlist(interaction: discord.Interaction):
+    watchlist = bot.store.data.get("tier_watchlists", {}).get(str(interaction.guild_id), {})
+    if not watchlist:
+        await interaction.response.send_message("This server is not watching any MCTiers players yet.", ephemeral=True)
+        return
+    names = [str(item.get("username", "Unknown")) for item in watchlist.values() if isinstance(item, dict)]
+    await interaction.response.send_message(embed=embed("👀 MCTiers Tierwatch", "\n".join(f"• {discord.utils.escape_markdown(name)}" for name in names[:50]), CYAN), ephemeral=True)
+
+
+@bot.tree.command(name="automod", description="Enable or disable PVPClub Empire's server automod.")
+@app_commands.guild_only()
+@app_commands.checks.has_permissions(manage_guild=True)
+async def automod(interaction: discord.Interaction, enabled: bool):
+    bot.store.data.setdefault("automod_settings", {})[str(interaction.guild_id)] = bool(enabled)
+    await bot.store.save()
+    state = "enabled" if enabled else "disabled"
+    await interaction.response.send_message(f"🛡️ PVPClub Empire automod is now **{state}**.", ephemeral=True)
+
+
+@bot.tree.command(name="fban", description="Post a clearly labelled fake ban prank; no moderation action is taken.")
+@app_commands.guild_only()
+@app_commands.checks.has_permissions(moderate_members=True)
+async def fban(interaction: discord.Interaction, member: discord.Member, reason: str = "Skill issue"):
+    reason = reason.strip()[:300] or "Skill issue"
+    e = embed("🔨 FAKE BAN", f"**{member}** has allegedly been banned from PVPClub Empire.\n\n**Reason:** {discord.utils.escape_markdown(reason)}\n\n🎭 **PRANK:** This is only a joke announcement. No ban or other moderation action was performed.", RED)
+    e.set_thumbnail(url=member.display_avatar.url)
+    e.set_footer(text="PVPClub Empire • Fake ban prank • No action taken")
+    await interaction.response.send_message(embed=e, allowed_mentions=discord.AllowedMentions.none())
+
+
+@bot.tree.command(name="howgay", description="A completely random, fictional meme meter for yourself.")
+async def howgay(interaction: discord.Interaction):
+    score = random.randint(0, 100)
+    e = embed("🌈 Totally random meme meter", f"{interaction.user.mention}, your completely fictional meter rolled **{score}%**.\n\nThis is a random joke number, not a guess or statement about anyone's real sexual orientation.", PINK)
+    await interaction.response.send_message(embed=e, allowed_mentions=discord.AllowedMentions.none())
+
+
+@bot.tree.command(name="role", description="Add or remove a role from a member.")
+@app_commands.guild_only()
+@app_commands.checks.has_permissions(manage_roles=True)
+@app_commands.checks.bot_has_permissions(manage_roles=True)
+@app_commands.choices(action=[app_commands.Choice(name="Add", value="add"), app_commands.Choice(name="Remove", value="remove")])
+async def role(interaction: discord.Interaction, action: app_commands.Choice[str], member: discord.Member, target_role: discord.Role):
+    guild = interaction.guild
+    actor = interaction.user
+    bot_member = guild.me if guild else None
+    if guild is None or not isinstance(actor, discord.Member):
+        await interaction.response.send_message("This command only works in a server.", ephemeral=True)
+        return
+    if target_role.is_default() or target_role.managed:
+        await interaction.response.send_message("That role cannot be assigned manually.", ephemeral=True)
+        return
+    if actor.id != guild.owner_id and target_role >= actor.top_role:
+        await interaction.response.send_message("You can only manage roles below your highest role.", ephemeral=True)
+        return
+    if bot_member is None or target_role >= bot_member.top_role:
+        await interaction.response.send_message("My highest role must be above the role you want to manage.", ephemeral=True)
+        return
+    if actor.id != guild.owner_id and member.top_role >= actor.top_role:
+        await interaction.response.send_message("You can only manage roles for members below your highest role.", ephemeral=True)
+        return
+    try:
+        if (actor.id != guild.owner_id and (
+            target_role.permissions.administrator
+            or target_role.permissions.manage_guild
+            or target_role.permissions.manage_roles
+            or target_role.permissions.ban_members
+            or target_role.permissions.kick_members
+            or target_role.permissions.moderate_members
+        )):
+            await interaction.response.send_message(
+                "Only the server owner can assign roles that grant powerful server/moderation permissions.",
+                ephemeral=True,
+            )
+            return
+        if action.value == "add":
+            await member.add_roles(target_role, reason=f"Role assigned by {actor} ({actor.id})")
+            message = f"✅ Added {target_role.mention} to {member.mention}."
+        else:
+            await member.remove_roles(target_role, reason=f"Role removed by {actor} ({actor.id})")
+            message = f"✅ Removed {target_role.mention} from {member.mention}."
+    except discord.Forbidden:
+        message = "Discord denied that role change. Check role hierarchy and permissions."
+    else:
+        await write_modlog(guild, "Role updated", f"{member} ({member.mention})", member.id, actor,
+                           f"{action.value.title()} role {target_role.name}", color=GREEN)
+    await interaction.response.send_message(message, ephemeral=True)
+
+
+@bot.tree.command(name="nickname", description="Change or clear a member's server nickname.")
+@app_commands.guild_only()
+@app_commands.checks.has_permissions(manage_nicknames=True)
+@app_commands.checks.bot_has_permissions(manage_nicknames=True)
+@app_commands.describe(nickname="New nickname (1–32 characters), or type 'clear' to remove it", reason="Why the nickname is being changed")
+async def nickname(interaction: discord.Interaction, member: discord.Member, nickname: str, reason: str = "No reason provided"):
+    error = moderation_target_error(interaction, member)
+    if error:
+        await interaction.response.send_message(error, ephemeral=True)
+        return
+    nickname = nickname.strip()
+    if nickname.casefold() != "clear" and not 1 <= len(nickname) <= 32:
+        await interaction.response.send_message("Nicknames must be 1–32 characters. Use `clear` to remove the nickname.", ephemeral=True)
+        return
+    new_nick = None if nickname.casefold() == "clear" else nickname
+    reason = reason.strip()[:500] or "No reason provided"
+    await interaction.response.defer(ephemeral=True, thinking=True)
+    await member.edit(nick=new_nick, reason=moderation_audit_reason(interaction, reason))
+    await send_mod_confirmation(
+        interaction, "Nickname cleared" if new_nick is None else "Nickname changed",
+        member, reason, details=f"New nickname: {new_nick or 'None'}", color=GREEN
+    )
+
+
 @bot.event
 async def on_ready():
     log.info("Logged in as %s (%s)", bot.user, bot.user.id if bot.user else "unknown")
@@ -498,6 +1098,12 @@ async def on_guild_join(guild: discord.Guild):
 async def on_message(message: discord.Message):
     if message.author.bot or not message.guild:
         return
+
+    # AutoMod only targets serious slurs, message floods, repeated messages and mention spam.
+    # Ordinary profanity such as "fuck" and "shit" is intentionally not filtered.
+    if await run_automod(message):
+        return
+
     if "meow" in message.content.lower():
         role = discord.utils.get(message.guild.roles, name="Meow") or await ensure_meow_role(message.guild)
         if role and role not in message.author.roles:
@@ -523,6 +1129,89 @@ async def on_message(message: discord.Message):
             entries.clear()
             await message.channel.send("🐾 **MEOW CHAIN COMBO!** Three different players have activated the cat protocol. +100 aura :3")
     await bot.process_commands(message)
+    # Repost after bot command/meow responses too, keeping the opt-in card at the bottom.
+    event_settings = bot.store.data.get("event_settings", {}).get(str(message.guild.id), {})
+    if isinstance(event_settings, dict) and event_settings.get("channel_id") == message.channel.id:
+        if isinstance(message.channel, discord.TextChannel):
+            await refresh_event_sticky(message.channel)
+
+
+def contains_prohibited_slur(text: str) -> bool:
+    normalized = unicodedata.normalize("NFKC", text).casefold()
+    # Catch common spaced/punctuated/leet variants of the N-word, not ordinary profanity.
+    pattern = r"(?<![a-z0-9])n[\W_]*[i1!|l][\W_]*g[\W_]*g[\W]*(?:[e3][\W_]*r|[a4@](?:[\W_]*h)?)(?:[\W_]*s)?(?![a-z0-9])"
+    return bool(re.search(pattern, normalized))
+
+
+async def run_automod(message: discord.Message) -> bool:
+    guild = message.guild
+    member = message.author
+    if guild is None or not isinstance(member, discord.Member):
+        return False
+    enabled = bot.store.data.get("automod_settings", {}).get(str(guild.id), True)
+    if not enabled:
+        return False
+    if member.id == guild.owner_id or member.guild_permissions.administrator or member.guild_permissions.manage_messages:
+        return False
+
+    reason = None
+    content = message.content or ""
+    if contains_prohibited_slur(content):
+        reason = "Severe slur / hate speech"
+    else:
+        now = time.monotonic()
+        key = (guild.id, member.id)
+        entries = bot.automod_recent_messages.setdefault(key, [])
+        compact = " ".join(content.casefold().split())[:300]
+        entries[:] = [(stamp, previous) for stamp, previous in entries if now - stamp <= 10]
+        entries.append((now, compact))
+        recent_count = len(entries)
+        repeated = sum(1 for _, previous in entries if compact and previous == compact)
+        if len(message.mentions) >= 6 or message.mention_everyone:
+            reason = "Mention spam"
+        elif recent_count >= 8:
+            reason = "Message spam (8 messages within 10 seconds)"
+        elif repeated >= 4:
+            reason = "Repeated message spam"
+
+    if reason is None:
+        return False
+
+    deleted = False
+    try:
+        await message.delete()
+        deleted = True
+    except (discord.Forbidden, discord.NotFound, discord.HTTPException):
+        log.warning("AutoMod could not delete a flagged message in guild %s", guild.id)
+
+    # Serious slurs receive a short timeout when Discord role hierarchy permits it.
+    if reason.startswith("Severe slur"):
+        bot_member = guild.me
+        if bot_member and bot_member.guild_permissions.moderate_members and member.top_role < bot_member.top_role:
+            try:
+                await member.timeout(timedelta(minutes=10), reason=f"PVPClub AutoMod: {reason}")
+            except discord.HTTPException:
+                log.warning("AutoMod could not timeout member %s in guild %s", member.id, guild.id)
+
+    bot_member = guild.me
+    if bot_member:
+        await write_modlog(
+            guild, "AutoMod action", f"{member} ({member.mention})", member.id,
+            bot_member, reason,
+            details="Message deleted." if deleted else "Flag detected, but deletion failed due to missing permissions or Discord API error.",
+            color=RED
+        )
+    try:
+        notice = (f"🛡️ {member.mention}, your message was removed by AutoMod: **{reason}**."
+                  if deleted else f"🛡️ {member.mention}, AutoMod detected **{reason}**, but I couldn't delete the message. Please check my Manage Messages permission.")
+        await message.channel.send(
+            notice,
+            delete_after=8,
+            allowed_mentions=discord.AllowedMentions(users=[member]),
+        )
+    except discord.HTTPException:
+        pass
+    return True
 
 
 @bot.tree.error
@@ -536,6 +1225,12 @@ async def on_app_command_error(interaction: discord.Interaction, error: app_comm
         message = f"Slow down! Try again in {error.retry_after:.1f}s. Even I need cooldowns."
     elif isinstance(original, (aiohttp.ClientError, asyncio.TimeoutError)):
         message = "The external API is being difficult. Try again in a moment."
+    elif isinstance(original, discord.Forbidden):
+        message = "Discord refused that action. Check my permissions and role position."
+    elif isinstance(original, discord.NotFound):
+        message = "That member, message, or resource could not be found."
+    elif isinstance(original, discord.HTTPException):
+        message = "Discord could not complete that action. Check the target and try again."
     else:
         log.exception("Application command failed", exc_info=original)
         message = "Something went wrong. The error was logged; don't panic, I've got it."
@@ -676,13 +1371,79 @@ async def ship(interaction: discord.Interaction, user1: discord.Member, user2: d
     await interaction.response.send_message(embed=embed("💞 Empire Ship Scanner", f"**{name}**\n{user1.mention} × {user2.mention}\n**Compatibility:** {score}%\n{verdict}", PINK))
 
 
-@bot.tree.command(name="makemeow", description="Post a clearly bot-attributed meow for a member.")
-async def makemeow(interaction: discord.Interaction, user: discord.Member):
-    await interaction.response.send_message(
-        f"🐾 **Empire Meow Announcement** — {user.display_name} has been nominated for a meow. :3",
-        allowed_mentions=discord.AllowedMentions.none()
-    )
+@bot.tree.command(name="makemeow", description="Post a meow using your own Discord name and avatar.")
+@app_commands.describe(message="The meow message to post (maximum 500 characters).")
+@app_commands.checks.cooldown(1, 30.0)
+async def makemeow(interaction: discord.Interaction, message: str = "meow :3"):
+    guild = interaction.guild
+    channel = interaction.channel
+    if guild is None or channel is None:
+        await interaction.response.send_message("This command only works inside a server channel.", ephemeral=True)
+        return
+    if not message.strip() or len(message) > 500:
+        await interaction.response.send_message("Your message must be 1–500 characters.", ephemeral=True)
+        return
 
+    thread = channel if isinstance(channel, discord.Thread) else None
+    parent = channel.parent if thread else channel
+    if not isinstance(parent, discord.TextChannel):
+        await interaction.response.send_message("Use this command in a normal text channel or its thread.", ephemeral=True)
+        return
+
+    bot_member = guild.me
+    if bot_member is None or not parent.permissions_for(bot_member).manage_webhooks:
+        await interaction.response.send_message(
+            "I need **Manage Webhooks** in this channel to post a meow with your own avatar.",
+            ephemeral=True
+        )
+        return
+
+    await interaction.response.defer(ephemeral=True, thinking=True)
+    try:
+        webhook = await bot.get_meow_webhook(parent)
+        send_args = {
+            "content": message.strip(),
+            "username": interaction.user.display_name[:80],
+            "avatar_url": interaction.user.display_avatar.url,
+            "allowed_mentions": discord.AllowedMentions.none(),
+            "wait": True,
+        }
+        if thread is not None:
+            send_args["thread"] = thread
+        await webhook.send(**send_args)
+    except discord.NotFound:
+        # A cached webhook may have been deleted; recreate it once and retry.
+        bot.meow_webhooks.pop(parent.id, None)
+        try:
+            webhook = await bot.get_meow_webhook(parent)
+            if thread is not None:
+                await webhook.send(
+                    content=message.strip(), username=interaction.user.display_name[:80],
+                    avatar_url=interaction.user.display_avatar.url,
+                    allowed_mentions=discord.AllowedMentions.none(), wait=True, thread=thread
+                )
+            else:
+                await webhook.send(
+                    content=message.strip(), username=interaction.user.display_name[:80],
+                    avatar_url=interaction.user.display_avatar.url,
+                    allowed_mentions=discord.AllowedMentions.none(), wait=True
+                )
+        except discord.HTTPException:
+            log.exception("Could not recreate the meow webhook in channel %s.", parent.id)
+            await interaction.followup.send("I couldn't create or use the meow webhook. Check my Manage Webhooks permission.", ephemeral=True)
+            return
+    except discord.Forbidden:
+        await interaction.followup.send("Discord denied webhook access. Give me **Manage Webhooks** in this channel.", ephemeral=True)
+        return
+    except discord.HTTPException:
+        log.exception("Could not send the meow webhook message in channel %s.", parent.id)
+        await interaction.followup.send("Discord couldn't send the meow message. Please try again.", ephemeral=True)
+        return
+
+    await interaction.followup.send(
+        "🐾 Your meow was posted using **your own** display name and profile picture. The `/makemeow` interaction remains visible.",
+        ephemeral=True
+    )
 
 # ---------------------------------------------------------------------------
 # MINECRAFT PROFILE / SKIN / STATUS
@@ -885,97 +1646,6 @@ async def mcstatus(interaction: discord.Interaction, ip: str = DEFAULT_MC_SERVER
     e.add_field(name="Sample", value=", ".join(x.get("name", "?") for x in sample[:8]) or "Not exposed", inline=False)
     e.add_field(name="MOTD", value="\n".join(motd)[:1024] or "No MOTD")
     await interaction.followup.send(embed=e)
-
-
-# ---------------------------------------------------------------------------
-# UNRANKED DUELS (no ELO, stored results or leaderboard)
-# ---------------------------------------------------------------------------
-
-class DuelInviteView(discord.ui.View):
-    def __init__(self, duel_id: str | None = None):
-        super().__init__(timeout=None)
-        self.duel_id = duel_id
-
-    @discord.ui.button(label="Accept", style=discord.ButtonStyle.success, custom_id="duel:accept")
-    async def accept(self, interaction: discord.Interaction, button: discord.ui.Button):
-        duel = bot.duel_sessions.get(self.duel_id or "")
-        if not duel or interaction.user.id != duel["opponent"]:
-            await interaction.response.send_message("This invite isn't yours to accept.", ephemeral=True)
-            return
-        duel["accepted"] = True
-        await interaction.response.edit_message(
-            content=f"⚔️ Duel accepted! {interaction.user.mention}, fight {duel['challenger']} in **{duel['kit']}**. Report the winner below.",
-            view=DuelResultView(self.duel_id),
-        )
-
-    @discord.ui.button(label="Decline", style=discord.ButtonStyle.danger, custom_id="duel:decline")
-    async def decline(self, interaction: discord.Interaction, button: discord.ui.Button):
-        duel = bot.duel_sessions.get(self.duel_id or "")
-        if not duel or interaction.user.id != duel["opponent"]:
-            await interaction.response.send_message("This invite isn't yours to decline.", ephemeral=True)
-            return
-        bot.duel_sessions.pop(self.duel_id, None)
-        await interaction.response.edit_message(
-            content="Duel declined. The arena remains peaceful. For now.", view=None
-        )
-
-
-class DuelResultView(discord.ui.View):
-    def __init__(self, duel_id: str | None = None):
-        super().__init__(timeout=None)
-        self.duel_id = duel_id
-
-    async def finish(self, interaction: discord.Interaction, winner_id: int | None):
-        duel = bot.duel_sessions.get(self.duel_id or "")
-        if not duel or interaction.user.id not in (duel["challenger"], duel["opponent"]):
-            await interaction.response.send_message("Only duel participants can report this.", ephemeral=True)
-            return
-        bot.duel_sessions.pop(self.duel_id or "", None)
-        if winner_id is None:
-            await interaction.response.edit_message(content="Duel cancelled. No ranking was recorded.", view=None)
-            return
-        loser_id = duel["opponent"] if winner_id == duel["challenger"] else duel["challenger"]
-        await interaction.response.edit_message(
-            content=f"🏆 <@{winner_id}> wins against <@{loser_id}>! This is an unranked duel; no ELO or tier rating was changed.",
-            view=None,
-        )
-
-    @discord.ui.button(label="Win (Challenger)", style=discord.ButtonStyle.success, custom_id="duel:win_challenger")
-    async def win_a(self, interaction: discord.Interaction, button: discord.ui.Button):
-        duel = bot.duel_sessions.get(self.duel_id or "")
-        if duel:
-            await self.finish(interaction, duel["challenger"])
-        else:
-            await interaction.response.send_message("This duel has expired.", ephemeral=True)
-
-    @discord.ui.button(label="Win (Opponent)", style=discord.ButtonStyle.success, custom_id="duel:win_opponent")
-    async def win_b(self, interaction: discord.Interaction, button: discord.ui.Button):
-        duel = bot.duel_sessions.get(self.duel_id or "")
-        if duel:
-            await self.finish(interaction, duel["opponent"])
-        else:
-            await interaction.response.send_message("This duel has expired.", ephemeral=True)
-
-    @discord.ui.button(label="Cancel", style=discord.ButtonStyle.danger, custom_id="duel:cancel")
-    async def cancel(self, interaction: discord.Interaction, button: discord.ui.Button):
-        await self.finish(interaction, None)
-
-
-@bot.tree.command(name="duel", description="Challenge someone to an unranked Empire 1v1.")
-@app_commands.choices(kit=[app_commands.Choice(name=x, value=x) for x in MODES])
-async def duel(interaction: discord.Interaction, opponent: discord.Member, kit: app_commands.Choice[str]):
-    if opponent.bot or opponent.id == interaction.user.id:
-        await interaction.response.send_message("Pick another human player, genius. :3", ephemeral=True)
-        return
-    duel_id = f"{interaction.id}"
-    bot.duel_sessions[duel_id] = {
-        "challenger": interaction.user.id, "opponent": opponent.id,
-        "kit": kit.value, "accepted": False
-    }
-    await interaction.response.send_message(
-        f"⚔️ {opponent.mention}, **{interaction.user.mention}** challenges you to an **unranked {kit.value}** duel!",
-        view=DuelInviteView(duel_id),
-    )
 
 
 # ---------------------------------------------------------------------------
@@ -1235,23 +1905,406 @@ async def announce(interaction: discord.Interaction, channel: discord.TextChanne
     await interaction.response.send_modal(AnnounceModal(channel or interaction.channel))
 
 
-class FakeBanView(discord.ui.View):
-    def __init__(self, issuer_id: int | None = None):
-        super().__init__(timeout=None)
-        self.issuer_id = issuer_id
+def snapshot_mctiers_rankings(rankings: Any) -> dict[str, dict[str, Any]]:
+    """Keep only ranking fields documented by MCTiers v2 for change detection."""
+    if not isinstance(rankings, dict):
+        return {}
+    snapshot: dict[str, dict[str, Any]] = {}
+    for mode, item in rankings.items():
+        if not isinstance(mode, str) or not isinstance(item, dict):
+            continue
+        snapshot[mode] = {
+            field: item.get(field)
+            for field in ("tier", "pos", "peak_tier", "peak_pos", "attained", "retired")
+            if field in item
+        }
+    return snapshot
 
-    @discord.ui.button(label="Appeal Ban", style=discord.ButtonStyle.danger, custom_id="fakeban:appeal")
-    async def appeal(self, interaction: discord.Interaction, button: discord.ui.Button):
-        await interaction.response.send_message(
-            f"😭 GOTCHA. This was a fake ban prank, not a real moderation action. Issued by <@{self.issuer_id}>. No ban occurred.",
-            ephemeral=True
+
+def tierwatch_deltas(previous: dict[str, Any], current: dict[str, Any]) -> list[dict[str, Any]]:
+    changes: list[dict[str, Any]] = []
+    for mode, new_item in current.items():
+        if not isinstance(new_item, dict):
+            continue
+        old_item = previous.get(mode)
+        if not isinstance(old_item, dict):
+            changes.append({"mode": mode, "old": None, "new": new_item, "kind": "added"})
+            continue
+        tier_changed = any(old_item.get(field) != new_item.get(field)
+                           for field in ("tier", "pos", "peak_tier", "peak_pos", "retired"))
+        attained_changed = (
+            "attained" in old_item and "attained" in new_item
+            and old_item.get("attained") != new_item.get("attained")
         )
+        if tier_changed:
+            changes.append({"mode": mode, "old": old_item, "new": new_item, "kind": "changed"})
+        elif attained_changed:
+            changes.append({"mode": mode, "old": old_item, "new": new_item, "kind": "attained"})
+    return changes
 
 
-@bot.tree.command(name="fakeban", description="Post an obvious server prank ban card (does not ban anyone).")
-async def fakeban(interaction: discord.Interaction, user: discord.Member, reason: str = "Being too cracked"):
-    e = embed("🚫 MODERATION NOTICE — PRANK", f"**Target:** {user.mention}\n**Reason:** {reason}\n\nThis is a fictional prank card. No moderation action has been taken. Press Appeal Ban for the reveal.", RED)
-    await interaction.response.send_message(embed=e, view=FakeBanView(interaction.user.id))
+# ---------------------------------------------------------------------------
+# MODERATION
+# ---------------------------------------------------------------------------
+
+
+def moderation_audit_reason(interaction: discord.Interaction, reason: str) -> str:
+    """Format an audit reason within Discord's 512-character limit."""
+    return f"{interaction.user} ({interaction.user.id}): {reason}"[:512]
+
+
+def moderation_target_error(interaction: discord.Interaction, member: discord.Member) -> str | None:
+    """Enforce Discord's owner and role hierarchy before a moderation action."""
+    guild = interaction.guild
+    actor = interaction.user
+    if guild is None or not isinstance(actor, discord.Member):
+        return "Moderation commands can only be used in a server."
+    if member.id == guild.owner_id:
+        return "The server owner cannot be moderated by this bot."
+    if member.id == actor.id:
+        return "You cannot moderate yourself with this command."
+    if bot.user and member.id == bot.user.id:
+        return "I cannot moderate myself."
+    if actor.id != guild.owner_id and member.top_role >= actor.top_role:
+        return "You can only moderate members whose highest role is below yours."
+    bot_member = guild.me
+    if bot_member is not None and member.top_role >= bot_member.top_role:
+        return "My highest role must be above the target's highest role."
+    return None
+
+
+async def write_modlog(
+    guild: discord.Guild,
+    action: str,
+    target_label: str,
+    target_id: int,
+    moderator: discord.Member,
+    reason: str,
+    *,
+    details: str | None = None,
+    color: int = RED,
+):
+    """Write to the configured moderation channel; Discord's audit log remains authoritative."""
+    configured = bot.store.data["modlog_channels"].get(str(guild.id))
+    if not configured:
+        return
+    try:
+        channel_id = int(configured)
+    except (TypeError, ValueError):
+        return
+    channel = guild.get_channel(channel_id)
+    if not isinstance(channel, discord.TextChannel):
+        return
+
+    e = embed(f"🛡️ Moderation • {action}", color=color)
+    e.add_field(name="Target", value=f"{target_label} (`{target_id}`)", inline=False)
+    e.add_field(name="Moderator", value=f"{moderator.mention} (`{moderator.id}`)", inline=True)
+    e.add_field(name="Reason", value=(reason or "No reason provided")[:1024], inline=False)
+    if details:
+        e.add_field(name="Details", value=details[:1024], inline=False)
+    e.timestamp = datetime.now(timezone.utc)
+    try:
+        await channel.send(embed=e, allowed_mentions=discord.AllowedMentions.none())
+    except discord.HTTPException:
+        log.exception("Could not post moderation log in guild %s.", guild.id)
+
+
+async def send_mod_confirmation(
+    interaction: discord.Interaction,
+    action: str,
+    member: discord.Member,
+    reason: str,
+    *,
+    color: int = RED,
+    details: str | None = None,
+):
+    await write_modlog(
+        interaction.guild, action, f"{member} ({member.mention})", member.id,
+        interaction.user, reason, details=details, color=color
+    )
+    e = embed(f"✅ {action}", color=color)
+    e.add_field(name="Member", value=f"{member} (`{member.id}`)", inline=False)
+    e.add_field(name="Reason", value=reason[:1024], inline=False)
+    if details:
+        e.add_field(name="Details", value=details[:1024], inline=False)
+    await interaction.followup.send(embed=e, ephemeral=True)
+
+
+@bot.tree.command(name="setmodlog", description="Set the channel for moderation action logs.")
+@app_commands.guild_only()
+@app_commands.checks.has_permissions(manage_guild=True)
+@app_commands.checks.bot_has_permissions(view_channel=True, send_messages=True, embed_links=True)
+async def setmodlog(interaction: discord.Interaction, channel: discord.TextChannel):
+    bot_member = interaction.guild.me
+    channel_permissions = channel.permissions_for(bot_member) if bot_member else None
+    if (channel_permissions is None or not channel_permissions.view_channel
+            or not channel_permissions.send_messages or not channel_permissions.embed_links):
+        await interaction.response.send_message(
+            "I need View Channel, Send Messages, and Embed Links in that channel.", ephemeral=True
+        )
+        return
+    bot.store.data["modlog_channels"][str(interaction.guild.id)] = str(channel.id)
+    await bot.store.save()
+    await interaction.response.send_message(
+        f"🛡️ Moderation logs will now be sent to {channel.mention}.", ephemeral=True
+    )
+
+
+@bot.tree.command(name="ban", description="Ban a member from this server.")
+@app_commands.guild_only()
+@app_commands.describe(delete_message_days="Delete 0–7 days of the member's recent messages.")
+@app_commands.checks.has_permissions(ban_members=True)
+@app_commands.checks.bot_has_permissions(ban_members=True)
+async def ban(
+    interaction: discord.Interaction,
+    member: discord.Member,
+    reason: str = "No reason provided",
+    delete_message_days: app_commands.Range[int, 0, 7] = 0,
+):
+    error = moderation_target_error(interaction, member)
+    if error:
+        await interaction.response.send_message(error, ephemeral=True)
+        return
+    reason = reason.strip()[:500] or "No reason provided"
+    await interaction.response.defer(ephemeral=True, thinking=True)
+    await interaction.guild.ban(
+        member, reason=moderation_audit_reason(interaction, reason),
+        delete_message_seconds=delete_message_days * 86400,
+    )
+    await send_mod_confirmation(
+        interaction, "Member banned", member, reason,
+        details=f"Deleted recent messages: {delete_message_days} day(s)."
+    )
+
+
+@bot.tree.command(name="unban", description="Unban a user by their Discord ID.")
+@app_commands.guild_only()
+@app_commands.checks.has_permissions(ban_members=True)
+@app_commands.checks.bot_has_permissions(ban_members=True)
+async def unban(interaction: discord.Interaction, user_id: str, reason: str = "No reason provided"):
+    if not re.fullmatch(r"\d{17,20}", user_id.strip()):
+        await interaction.response.send_message("Enter a valid 17–20 digit Discord user ID.", ephemeral=True)
+        return
+    target_id = int(user_id)
+    reason = reason.strip()[:500] or "No reason provided"
+    await interaction.response.defer(ephemeral=True, thinking=True)
+    await interaction.guild.unban(
+        discord.Object(id=target_id),
+        reason=moderation_audit_reason(interaction, reason)
+    )
+    await write_modlog(
+        interaction.guild, "Member unbanned", f"User ID {target_id}", target_id,
+        interaction.user, reason, color=GREEN
+    )
+    await interaction.followup.send(
+        embed=embed("✅ Member unbanned", f"**User ID:** `{target_id}`\n**Reason:** {reason}", GREEN),
+        ephemeral=True
+    )
+
+
+@bot.tree.command(name="kick", description="Kick a member from this server.")
+@app_commands.guild_only()
+@app_commands.checks.has_permissions(kick_members=True)
+@app_commands.checks.bot_has_permissions(kick_members=True)
+async def kick(interaction: discord.Interaction, member: discord.Member, reason: str = "No reason provided"):
+    error = moderation_target_error(interaction, member)
+    if error:
+        await interaction.response.send_message(error, ephemeral=True)
+        return
+    reason = reason.strip()[:500] or "No reason provided"
+    await interaction.response.defer(ephemeral=True, thinking=True)
+    await member.kick(reason=moderation_audit_reason(interaction, reason))
+    await send_mod_confirmation(interaction, "Member kicked", member, reason)
+
+
+@bot.tree.command(name="timeout", description="Timeout a member for up to 28 days.")
+@app_commands.guild_only()
+@app_commands.checks.has_permissions(moderate_members=True)
+@app_commands.checks.bot_has_permissions(moderate_members=True)
+async def timeout(
+    interaction: discord.Interaction,
+    member: discord.Member,
+    minutes: app_commands.Range[int, 1, 40320],
+    reason: str = "No reason provided",
+):
+    error = moderation_target_error(interaction, member)
+    if error:
+        await interaction.response.send_message(error, ephemeral=True)
+        return
+    reason = reason.strip()[:500] or "No reason provided"
+    await interaction.response.defer(ephemeral=True, thinking=True)
+    await member.timeout(
+        timedelta(minutes=minutes),
+        reason=moderation_audit_reason(interaction, reason)
+    )
+    await send_mod_confirmation(
+        interaction, "Member timed out", member, reason,
+        details=f"Duration: {minutes} minute(s)."
+    )
+
+
+@bot.tree.command(name="untimeout", description="Remove a member's timeout.")
+@app_commands.guild_only()
+@app_commands.checks.has_permissions(moderate_members=True)
+@app_commands.checks.bot_has_permissions(moderate_members=True)
+async def untimeout(interaction: discord.Interaction, member: discord.Member, reason: str = "No reason provided"):
+    error = moderation_target_error(interaction, member)
+    if error:
+        await interaction.response.send_message(error, ephemeral=True)
+        return
+    reason = reason.strip()[:500] or "No reason provided"
+    await interaction.response.defer(ephemeral=True, thinking=True)
+    await member.timeout(None, reason=moderation_audit_reason(interaction, reason))
+    await send_mod_confirmation(interaction, "Timeout removed", member, reason, color=GREEN)
+
+
+@bot.tree.command(name="warn", description="Issue a warning and save it to the member's history.")
+@app_commands.guild_only()
+@app_commands.checks.has_permissions(moderate_members=True)
+async def warn(interaction: discord.Interaction, member: discord.Member, reason: str):
+    error = moderation_target_error(interaction, member)
+    if error:
+        await interaction.response.send_message(error, ephemeral=True)
+        return
+    reason = reason.strip()[:500]
+    if not reason:
+        await interaction.response.send_message("A warning reason is required.", ephemeral=True)
+        return
+    guild_key, member_key = str(interaction.guild.id), str(member.id)
+    guild_warnings = bot.store.data["warnings"].setdefault(guild_key, {})
+    member_warnings = guild_warnings.setdefault(member_key, [])
+    member_warnings.append({
+        "reason": reason,
+        "moderator_id": interaction.user.id,
+        "timestamp": int(time.time()),
+    })
+    # Keep the latest 50 entries per member to keep the JSON file compact.
+    del member_warnings[:-50]
+    await bot.store.save()
+    await write_modlog(
+        interaction.guild, "Member warned", f"{member} ({member.mention})", member.id,
+        interaction.user, reason, details=f"Warning count: {len(member_warnings)}", color=0xF3C969
+    )
+    await interaction.response.send_message(
+        embed=embed("⚠️ Warning issued", f"**Member:** {member.mention}\n**Warning count:** {len(member_warnings)}\n**Reason:** {reason}", 0xF3C969),
+        ephemeral=True
+    )
+
+
+@bot.tree.command(name="warnings", description="View a member's saved warning history.")
+@app_commands.guild_only()
+@app_commands.checks.has_permissions(moderate_members=True)
+async def warnings(interaction: discord.Interaction, member: discord.Member):
+    items = bot.store.data["warnings"].get(str(interaction.guild.id), {}).get(str(member.id), [])
+    if not items:
+        await interaction.response.send_message(f"{member.mention} has no saved warnings.", ephemeral=True)
+        return
+    lines = []
+    for index, item in enumerate(items[-10:], start=max(1, len(items) - 9)):
+        timestamp = item.get("timestamp")
+        date_text = f"<t:{int(timestamp)}:R>" if isinstance(timestamp, int) else "Date unavailable"
+        reason_text = str(item.get("reason", "No reason recorded"))[:250]
+        moderator_id = item.get("moderator_id")
+        staff_text = f" • by <@{moderator_id}>" if isinstance(moderator_id, int) else ""
+        lines.append(f"**#{index}** {date_text}{staff_text}\n{reason_text}")
+    e = embed(f"⚠️ Warning history • {member}", "\n\n".join(lines), 0xF3C969)
+    e.set_footer(text=f"Showing latest {min(10, len(items))} of {len(items)} warning(s)")
+    await interaction.response.send_message(embed=e, ephemeral=True)
+
+
+@bot.tree.command(name="clearwarnings", description="Clear all saved warnings for a member.")
+@app_commands.guild_only()
+@app_commands.checks.has_permissions(manage_guild=True)
+async def clearwarnings(interaction: discord.Interaction, member: discord.Member, reason: str = "Warnings cleared by staff"):
+    guild_warnings = bot.store.data["warnings"].setdefault(str(interaction.guild.id), {})
+    removed = len(guild_warnings.pop(str(member.id), []))
+    await bot.store.save()
+    reason = reason.strip()[:500] or "Warnings cleared by staff"
+    await write_modlog(
+        interaction.guild, "Warnings cleared", f"{member} ({member.mention})", member.id,
+        interaction.user, reason, details=f"Removed warning entries: {removed}", color=GREEN
+    )
+    await interaction.response.send_message(
+        f"Cleared **{removed}** warning(s) for {member.mention}.", ephemeral=True
+    )
+
+
+@bot.tree.command(name="purge", description="Delete up to 100 recent messages in this channel.")
+@app_commands.guild_only()
+@app_commands.checks.has_permissions(manage_messages=True)
+@app_commands.checks.bot_has_permissions(manage_messages=True, read_message_history=True)
+async def purge(interaction: discord.Interaction, amount: app_commands.Range[int, 1, 100]):
+    channel = interaction.channel
+    if not isinstance(channel, (discord.TextChannel, discord.Thread)):
+        await interaction.response.send_message("Use this command in a text channel or thread.", ephemeral=True)
+        return
+    await interaction.response.defer(ephemeral=True, thinking=True)
+    deleted = await channel.purge(limit=amount, reason=f"Purged by {interaction.user} ({interaction.user.id})")
+    await write_modlog(
+        interaction.guild, "Messages purged", channel.mention, channel.id,
+        interaction.user, "Channel cleanup", details=f"Messages deleted: {len(deleted)}", color=0xF3C969
+    )
+    await interaction.followup.send(f"🧹 Deleted **{len(deleted)}** message(s) in {channel.mention}.", ephemeral=True)
+
+
+@bot.tree.command(name="slowmode", description="Set a text channel's slowmode in seconds.")
+@app_commands.guild_only()
+@app_commands.checks.has_permissions(manage_channels=True)
+@app_commands.checks.bot_has_permissions(manage_channels=True)
+async def slowmode(
+    interaction: discord.Interaction,
+    seconds: app_commands.Range[int, 0, 21600],
+    channel: discord.TextChannel | None = None,
+):
+    target = channel or interaction.channel
+    if not isinstance(target, discord.TextChannel):
+        await interaction.response.send_message("Choose a normal text channel for slowmode.", ephemeral=True)
+        return
+    await target.edit(slowmode_delay=seconds, reason=f"Slowmode changed by {interaction.user} ({interaction.user.id})")
+    await write_modlog(
+        interaction.guild, "Slowmode changed", target.mention, target.id,
+        interaction.user, "Channel slowmode updated", details=f"New slowmode: {seconds} second(s)", color=0xF3C969
+    )
+    await interaction.response.send_message(
+        f"⏱️ Slowmode in {target.mention} is now **{seconds} second(s)**.", ephemeral=True
+    )
+
+
+async def set_channel_lock(interaction: discord.Interaction, channel: discord.TextChannel | None, locked: bool):
+    target = channel or interaction.channel
+    if not isinstance(target, discord.TextChannel):
+        await interaction.response.send_message("Choose a normal text channel.", ephemeral=True)
+        return
+    overwrite = target.overwrites_for(interaction.guild.default_role)
+    overwrite.send_messages = False if locked else None
+    await target.set_permissions(
+        interaction.guild.default_role, overwrite=overwrite,
+        reason=f"Channel {'locked' if locked else 'unlocked'} by {interaction.user} ({interaction.user.id})"
+    )
+    action = "Channel locked" if locked else "Channel unlocked"
+    await write_modlog(
+        interaction.guild, action, target.mention, target.id, interaction.user,
+        "Channel permissions updated", color=RED if locked else GREEN
+    )
+    await interaction.response.send_message(
+        f"{'🔒' if locked else '🔓'} {target.mention} has been **{'locked' if locked else 'unlocked'}**.", ephemeral=True
+    )
+
+
+@bot.tree.command(name="lock", description="Prevent the @everyone role from sending messages in a channel.")
+@app_commands.guild_only()
+@app_commands.checks.has_permissions(manage_channels=True)
+@app_commands.checks.bot_has_permissions(manage_channels=True)
+async def lock(interaction: discord.Interaction, channel: discord.TextChannel | None = None):
+    await set_channel_lock(interaction, channel, True)
+
+
+@bot.tree.command(name="unlock", description="Restore the @everyone send-message permission in a channel.")
+@app_commands.guild_only()
+@app_commands.checks.has_permissions(manage_channels=True)
+@app_commands.checks.bot_has_permissions(manage_channels=True)
+async def unlock(interaction: discord.Interaction, channel: discord.TextChannel | None = None):
+    await set_channel_lock(interaction, channel, False)
 
 
 # ---------------------------------------------------------------------------
