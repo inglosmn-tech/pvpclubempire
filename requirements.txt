@@ -1,4 +1,0 @@
-# Discord slash commands, interactions and UI views
-discord.py>=2.3.2,<3.0
-# Async HTTP client and aiohttp status website
-aiohttp>=3.9.0,<4.0
