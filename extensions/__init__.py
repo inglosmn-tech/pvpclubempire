@@ -1,1 +1,0 @@
-"""PVPClub Empire bot extensions."""
