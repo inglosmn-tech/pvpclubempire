@@ -1171,6 +1171,10 @@ class PvPClubTiersCog(commands.Cog):
                 category=category, overwrites=overwrites,
                 topic=f"PvPClubTiers test {doc['ticket_id']} • player {interaction.user.id}")
             doc["channel_id"] = channel.id
+            # Compatibility with a legacy unique MongoDB index (channelId_1)
+            # that may still exist in older deployments. Keep both spellings
+            # populated until every existing database has been migrated.
+            doc["channelId"] = channel.id
             await self.db_call(self.tickets.insert_one, doc)
             await self.db_call(self.activity.insert_one, {"guild_id": guild.id, "kind": "ticket_opened",
                                "username": username, "gamemode": gamemode, "discord_id": interaction.user.id,
