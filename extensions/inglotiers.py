@@ -728,7 +728,20 @@ class IngloTiersCog(commands.Cog):
             if value in TIERS:
                 rows.append({**safe_player(p), "display_tier": value, "best_mode": best_mode,
                              "sort_index": TIERS.index(value)})
-        rows.sort(key=lambda p: (p["sort_index"], p["username"].casefold()))
+        if mode:
+            rows.sort(key=lambda p: (
+                p["sort_index"],
+                -POINTS.get(p["display_tier"], 0),
+                -p["totalPoints"],
+                p["username"].casefold(),
+            ))
+        else:
+            rows.sort(key=lambda p: (
+                -p["totalPoints"],
+                p["sort_index"],
+                -int(p.get("elo", 1000)),
+                p["username"].casefold(),
+            ))
         return rows[:limit]
 
     @app_commands.command(name="tier-leaderboard", description="Show the overall or gamemode tier leaderboard.")
@@ -1478,12 +1491,20 @@ class IngloTiersCog(commands.Cog):
         if not gid:
             return web.json_response([])
         docs = await self.db_call(lambda: list(self.activity.find({
-            "guild_id": gid, "kind": "tier_change"
+            "guild_id": gid, "kind": {"$in": ["tier_change", "duel_result"]}
         }).sort("created_at", DESCENDING).limit(30)))
         return web.json_response([{
-            "type": "tier-change", "playerIgn": p.get("username"), "playerId": str(p.get("discord_id", "")),
-            "mode": p.get("gamemode"), "oldTier": p.get("old_tier"),
-            "newTier": p.get("new_tier"), "details": p.get("source"),
+            **({
+                "type": "duel-result", "playerIgn": p.get("winner_ign"),
+                "mode": p.get("gamemode"), "oldTier": "Duel",
+                "newTier": f"Won {p.get('score', '')}",
+                "details": f"+{p.get('elo_change', 0)} ELO",
+            } if p.get("kind") == "duel_result" else {
+                "type": "tier-change", "playerIgn": p.get("username"),
+                "playerId": str(p.get("discord_id", "")), "mode": p.get("gamemode"),
+                "oldTier": p.get("old_tier"), "newTier": p.get("new_tier"),
+                "details": p.get("source"),
+            }),
             "createdAt": p.get("created_at").isoformat() if p.get("created_at") else None,
         } for p in docs])
 
