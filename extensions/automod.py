@@ -174,6 +174,7 @@ class AntiMacroChallengeModal(discord.ui.Modal):
             )
             return
         self.engine.macro_pending.discard(self.key)
+        self.engine.macro_blocked_until.pop(self.key, None)
         self.engine.macro_verified[self.key] = time.monotonic() + 300
         self.parent_view.stop()
         await interaction.response.send_message(
@@ -226,6 +227,7 @@ class AutoModEngine:
         self.macro_messages: dict[tuple[int, int, int], deque[tuple[float, str]]] = defaultdict(deque)
         self.macro_pending: set[tuple[int, int, int]] = set()
         self.macro_verified: dict[tuple[int, int, int], float] = {}
+        self.macro_blocked_until: dict[tuple[int, int, int], float] = {}
         self.spam_cooldowns: dict[tuple[int, int], float] = {}
         self.ai_last_check: dict[tuple[int, int], float] = {}
         self._ai_locks: dict[int, asyncio.Lock] = {}
@@ -402,6 +404,14 @@ class AutoModEngine:
         if verified_until > now:
             return False
         self.macro_verified.pop(key, None)
+        blocked_until = self.macro_blocked_until.get(key, 0.0)
+        if blocked_until > now:
+            try:
+                await message.delete()
+            except (discord.Forbidden, discord.NotFound, discord.HTTPException):
+                pass
+            return True
+        self.macro_blocked_until.pop(key, None)
         if key in self.macro_pending:
             try:
                 await message.delete()
@@ -472,6 +482,7 @@ class AutoModEngine:
     async def expire_macro_challenge(self, key: tuple[int, int, int]) -> None:
         guild_id, channel_id, user_id = key
         self.macro_pending.discard(key)
+        self.macro_blocked_until[key] = time.monotonic() + 300
         guild = self.bot.get_guild(guild_id)
         if guild is None:
             return
@@ -675,6 +686,9 @@ class AutoModCog(commands.Cog):
         for key, expiry in list(self.engine.macro_verified.items()):
             if now > expiry:
                 self.engine.macro_verified.pop(key, None)
+        for key, expiry in list(self.engine.macro_blocked_until.items()):
+            if now > expiry:
+                self.engine.macro_blocked_until.pop(key, None)
         for key, expiry in list(self.engine.spam_cooldowns.items()):
             if now > expiry:
                 self.engine.spam_cooldowns.pop(key, None)
