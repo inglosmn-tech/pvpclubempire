@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import math
 import os
 import random
 import re
@@ -118,9 +119,11 @@ def safe_player(player: dict) -> dict:
         "server": "mcpvp.club",
         "tiers": tiers,
         "totalPoints": total_points,
+        "elo": int(player.get("elo", 1000)),
         "wins": int(player.get("wins", 0)),
         "losses": int(player.get("losses", 0)),
         "duelsPlayed": int(player.get("duels_played", 0)),
+        "winRate": round((int(player.get("wins", 0)) / max(1, int(player.get("wins", 0)) + int(player.get("losses", 0)))) * 100, 1),
         "createdAt": player.get("created_at").isoformat() if player.get("created_at") else None,
     }
 
@@ -319,7 +322,7 @@ class IngloTiersCog(commands.Cog):
         display = username or member.display_name
         update = {"$set": {"updated_at": now}, "$setOnInsert": {
             "guild_id": guild_id, "discord_id": member.id, "username": display,
-            "username_lc": display.casefold(), "tiers": {}, "cooldowns": {}, "created_at": now}}
+            "username_lc": display.casefold(), "tiers": {}, "cooldowns": {}, "elo": 1000, "created_at": now}}
         if username:
             update["$set"].update({"username": username, "username_lc": username.casefold()})
         await self.db_call(self.players.update_one, {"guild_id": guild_id, "discord_id": member.id}, update, upsert=True)
@@ -574,7 +577,7 @@ class IngloTiersCog(commands.Cog):
         if desired and desired not in member.roles:
             await member.add_roles(desired, reason=f"IngloTiers best tier: {tier} in {mode}")
 
-    async def save_tier(self, guild, member, gamemode, new_tier, tester, source, username=None):
+    async def save_tier(self, guild, member, gamemode, new_tier, tester, source, username=None, reason=None):
         player = await self.get_or_create_player(guild.id, member, username)
         old_tier = (player.get("tiers") or {}).get(gamemode)
         tiers = dict(player.get("tiers") or {})
@@ -590,10 +593,12 @@ class IngloTiersCog(commands.Cog):
                       "username": display_name, "username_lc": display_name.casefold()}})
         await self.db_call(self.history.insert_one, {"guild_id": guild.id, "discord_id": member.id,
             "username": display_name, "gamemode": gamemode, "old_tier": old_tier or "Unranked",
-            "new_tier": new_tier, "tester_id": tester.id, "source": source, "created_at": now})
+            "new_tier": new_tier, "tester_id": tester.id, "source": source,
+            "reason": (reason or "")[:300], "created_at": now})
         await self.db_call(self.activity.insert_one, {"guild_id": guild.id, "kind": "tier_change",
             "discord_id": member.id, "username": display_name, "gamemode": gamemode,
-            "old_tier": old_tier or "Unranked", "new_tier": new_tier, "created_at": now})
+            "old_tier": old_tier or "Unranked", "new_tier": new_tier,
+            "source": source, "reason": (reason or "")[:300], "created_at": now})
         if source == "test":
             await self.db_call(self.tester_stats.update_one, {"guild_id": guild.id, "tester_id": tester.id},
                 {"$inc": {"tests_completed": 1}, "$set": {"tester_name": tester.display_name, "updated_at": now}}, upsert=True)
