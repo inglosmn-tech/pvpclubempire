@@ -35,7 +35,6 @@ COLOURS = {
 MODE_OPTIONS = [app_commands.Choice(name=m, value=m) for m in GAMEMODES]
 TIER_OPTIONS = [app_commands.Choice(name=t, value=t) for t in TIERS]
 BEST_OF_OPTIONS = [app_commands.Choice(name=str(n), value=n) for n in (1, 3, 5, 7)]
-COOLDOWN = 7 * 24 * 60 * 60
 TRIVIA_INTERVAL = 20 * 60
 
 TRIVIA_QUESTIONS = [
@@ -301,6 +300,45 @@ class TesterApplicationReviewView(discord.ui.View):
                        emoji="✖️", custom_id="pvpclubtiers:tester-app:reject")
     async def reject(self, interaction: discord.Interaction, button: discord.ui.Button):
         await self.cog.review_tester_application(interaction, accepted=False)
+
+
+class OwnerSetTierSelect(discord.ui.Select):
+    def __init__(self, cog, gamemode: str, username: str, player_id: int, current_tier: str | None):
+        self.cog = cog
+        self.gamemode = gamemode
+        self.username = username
+        self.player_id = player_id
+        options = [
+            discord.SelectOption(
+                label=tier,
+                value=tier,
+                description=f"{POINTS[tier]} tier points",
+                default=(tier == current_tier),
+            )
+            for tier in TIERS
+        ]
+        super().__init__(
+            placeholder="Choose the tier to assign…",
+            min_values=1,
+            max_values=1,
+            options=options,
+            custom_id="pvpclubtiers:owner-set-tier",
+        )
+
+    async def callback(self, interaction: discord.Interaction):
+        await self.cog.owner_set_tier_from_select(
+            interaction,
+            self.gamemode,
+            self.username,
+            self.player_id,
+            self.values[0],
+        )
+
+
+class OwnerSetTierView(discord.ui.View):
+    def __init__(self, cog, gamemode: str, username: str, player_id: int, current_tier: str | None):
+        super().__init__(timeout=180)
+        self.add_item(OwnerSetTierSelect(cog, gamemode, username, player_id, current_tier))
 
 
 class TierRequestPanelView(discord.ui.View):
@@ -743,7 +781,7 @@ class PvPClubTiersCog(commands.Cog):
                               description=("Click below to open your own private test ticket.\n\n"
                                            "1. Choose a gamemode.\n2. Enter your Minecraft username.\n"
                                            "3. Wait for a tester with the matching gamemode role.\n\n"
-                                           "A seven-day cooldown applies after a completed test in that gamemode."),
+                                           "There are no testing cooldowns. You can request another test once your previous ticket is closed."),
                               colour=0x55DDEB)
             e.set_footer(text="PvPClubTiers • EU • mcpvp.club")
             if panel:
@@ -1188,11 +1226,6 @@ class PvPClubTiersCog(commands.Cog):
             channel = guild.get_channel(active.get("channel_id", 0))
             await interaction.response.send_message("You already have an active ticket: " + (channel.mention if channel else "ticket " + active["ticket_id"]), ephemeral=True)
             return
-        last = (player or {}).get("cooldowns", {}).get(mode_key(gamemode))
-        if last and time.time() - float(last) < COOLDOWN:
-            await interaction.response.send_message(
-                f"You can request another {gamemode} test <t:{int(float(last) + COOLDOWN)}:R>.", ephemeral=True)
-            return
         tester_role_id = config.get("tester_roles", {}).get(gamemode)
         tester_role = guild.get_role(int(tester_role_id)) if tester_role_id else None
         # This server has requested public visibility for every channel.
@@ -1338,14 +1371,11 @@ class PvPClubTiersCog(commands.Cog):
             if mode in GAMEMODES and value in TIERS
         }
         tiers[gamemode] = new_tier
-        cooldowns = dict(player.get("cooldowns") or {})
-        if source == "test":
-            cooldowns[mode_key(gamemode)] = time.time()
         now = datetime.now(timezone.utc)
         display_name = username or player.get("username")
         await self.db_call(self.players.update_one, {"guild_id": guild.id, "discord_id": member.id},
             {"$set": {"tiers": tiers, "total_points": total_tier_points(tiers),
-                      "cooldowns": cooldowns, "updated_at": now,
+                      "cooldowns": {}, "updated_at": now,
                       "username": display_name, "username_lc": display_name.casefold()}})
         await self.db_call(self.history.insert_one, {"guild_id": guild.id, "discord_id": member.id,
             "username": display_name, "gamemode": gamemode, "old_tier": old_tier or "Unranked",
@@ -1372,6 +1402,169 @@ class PvPClubTiersCog(commands.Cog):
             if channel:
                 await channel.send(embed=embed)
         return old_tier, best, best_mode
+
+    @commands.command(name="settier")
+    @commands.guild_only()
+    async def settier(self, ctx: commands.Context, *, target: str = ""):
+        """Owner-only manual tier assignment: ?settier <gamemode> <minecraft-ign>."""
+        if ctx.guild is None or ctx.author.id != ctx.guild.owner_id:
+            await ctx.reply("Only the server owner can use ?settier.", mention_author=False)
+            return
+        if self.db is None:
+            await ctx.reply("PvPClubTiers database is not connected. Check the Render environment and restart the bot.")
+            return
+
+        parts = target.rsplit(maxsplit=1)
+        if len(parts) != 2:
+            await ctx.reply(
+                "Usage: ?settier <gamemode> <ign>\n"
+                "Example: ?settier UHC _Inglo\n"
+                "For multi-word gamemodes, write the full name, e.g. ?settier Spear Mace _Inglo."
+            )
+            return
+
+        mode_input = parts[0].strip().strip("\"'").casefold()
+        username_input = parts[1].strip()
+        gamemode = next((mode for mode in GAMEMODES if mode.casefold() == mode_input), None)
+        if gamemode is None:
+            await ctx.reply("Unknown gamemode. Available modes: " + ", ".join(GAMEMODES))
+            return
+        try:
+            username = clean_username(username_input)
+        except ValueError as exc:
+            await ctx.reply(str(exc))
+            return
+
+        try:
+            player = await self.db_call(
+                self.players.find_one,
+                {
+                    "guild_id": ctx.guild.id,
+                    "$or": [
+                        {"username_lc": username.casefold()},
+                        {"username": {"$regex": f"^{re.escape(username)}$", "$options": "i"}},
+                    ],
+                },
+            )
+        except Exception:
+            log.exception("Owner ?settier player lookup failed for %s", username)
+            await ctx.reply("I couldn't look up that player. Check the Render logs.")
+            return
+
+        if not player:
+            await ctx.reply(
+                f"I couldn't find a PvPClubTiers profile for **{username}**. "
+                "The player must have a profile first (for example, by requesting a test or using /ign)."
+            )
+            return
+
+        player_id = int(player.get("discord_id") or player.get("discordId") or 0)
+        if not player_id:
+            await ctx.reply("That profile has no linked Discord account, so I can't assign its tier.")
+            return
+
+        current_tier = (player.get("tiers") or {}).get(gamemode)
+        embed = discord.Embed(
+            title="🛠️ Owner tier assignment",
+            description=(
+                f"**Player:** {player.get('username', username)}\n"
+                f"**Gamemode:** {gamemode}\n"
+                f"**Current tier:** {current_tier or 'Unranked'}\n\n"
+                "Choose the new tier below. Only the server owner can confirm it."
+            ),
+            colour=0x55DDEB,
+        )
+        await ctx.reply(embed=embed, view=OwnerSetTierView(self, gamemode, username, player_id, current_tier))
+
+    async def owner_set_tier_from_select(
+        self,
+        interaction: discord.Interaction,
+        gamemode: str,
+        username: str,
+        player_id: int,
+        new_tier: str,
+    ):
+        guild = interaction.guild
+        if guild is None or interaction.user.id != guild.owner_id:
+            await interaction.response.send_message("Only the server owner can confirm this tier change.", ephemeral=True)
+            return
+        if new_tier not in TIERS or gamemode not in GAMEMODES:
+            await interaction.response.send_message("Invalid gamemode or tier.", ephemeral=True)
+            return
+        if not await self.require_db(interaction):
+            return
+
+        await interaction.response.defer(ephemeral=True, thinking=True)
+        try:
+            player = await self.db_call(
+                self.players.find_one,
+                {
+                    "guild_id": guild.id,
+                    "discord_id": player_id,
+                },
+            )
+            if not player:
+                player = await self.db_call(
+                    self.players.find_one,
+                    {"guild_id": guild.id, "discordId": player_id},
+                )
+            if not player:
+                await interaction.followup.send(
+                    f"The profile for **{username}** no longer exists. Run ?settier again.",
+                    ephemeral=True,
+                )
+                return
+
+            member = guild.get_member(player_id)
+            if member is None:
+                try:
+                    member = await guild.fetch_member(player_id)
+                except discord.NotFound:
+                    member = None
+                except discord.HTTPException:
+                    member = None
+
+            if member is None:
+                await interaction.followup.send(
+                    f"**{username}** has a saved profile but is no longer in this Discord server. "
+                    "They must rejoin before their tier role can be synchronized.",
+                    ephemeral=True,
+                )
+                return
+
+            old_tier, best, best_mode = await self.save_tier(
+                guild,
+                member,
+                gamemode,
+                new_tier,
+                interaction.user,
+                "owner",
+                player.get("username") or username,
+                reason="Manually assigned by the server owner",
+            )
+            try:
+                await interaction.message.edit(view=None)
+            except (discord.Forbidden, discord.HTTPException):
+                pass
+            await interaction.followup.send(
+                f"✅ Set **{username}** to **{new_tier}** in **{gamemode}**. "
+                f"Previous tier: **{old_tier or 'Unranked'}**. "
+                f"Overall tier: **{best or 'Unranked'}**"
+                + (f" in **{best_mode}**." if best_mode else "."),
+                ephemeral=True,
+            )
+        except (ValueError, PyMongoError, discord.HTTPException):
+            log.exception("Owner ?settier failed for %s in %s", username, gamemode)
+            await interaction.followup.send(
+                "I couldn't save that tier. Check the Render logs for the exact database or role error.",
+                ephemeral=True,
+            )
+        except Exception:
+            log.exception("Unexpected owner ?settier error for %s in %s", username, gamemode)
+            await interaction.followup.send(
+                "Something went wrong while setting the tier. Check the Render logs.",
+                ephemeral=True,
+            )
 
     @app_commands.command(name="set-tier", description="Submit a player's tier-test result from their claimed ticket.")
     @app_commands.guild_only()
@@ -1732,22 +1925,12 @@ class PvPClubTiersCog(commands.Cog):
         embed.set_footer(text=f"{ranked} ranked players • {len(docs) - ranked} unranked")
         await interaction.response.send_message(embed=embed)
 
-    @app_commands.command(name="tier-cooldowns", description="Check when you can request another test in each gamemode.")
+    @app_commands.command(name="tier-cooldowns", description="Check the tier-test request cooldown rules.")
     @app_commands.guild_only()
     async def tier_cooldowns(self, interaction):
-        if not await self.require_db(interaction):
-            return
-        player = await self.get_player(interaction.guild.id, interaction.user.id)
-        cooldowns = (player or {}).get("cooldowns", {})
-        now = time.time()
-        lines = []
-        for mode in GAMEMODES:
-            last = float(cooldowns.get(mode_key(mode), 0) or 0)
-            available_at = last + COOLDOWN
-            status = "Ready now" if not last or available_at <= now else f"Available <t:{int(available_at)}:R>"
-            lines.append(f"**{mode}:** {status}")
         await interaction.response.send_message(
-            embed=discord.Embed(title="Your tier-test cooldowns", description="\n".join(lines), colour=0x55DDEB),
+            "✅ **Tier-testing cooldowns are disabled.** You can request another test in any gamemode "
+            "as soon as you have no other active test ticket.",
             ephemeral=True,
         )
 
