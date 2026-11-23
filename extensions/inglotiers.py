@@ -1288,12 +1288,49 @@ class IngloTiersCog(commands.Cog):
                     "Use the Cancel queue button first.", ephemeral=True,
                 )
                 return
-            opponent_queue = await self.db_call(
-                lambda: self.matchmaking_queue.find_one({
+            candidates = await self.db_call(
+                lambda: list(self.matchmaking_queue.find({
                     "guild_id": guild.id, "gamemode": gamemode, "status": "waiting",
                     "user_id": {"$ne": interaction.user.id},
-                }, sort=[("created_at", ASCENDING)])
+                }).sort("created_at", ASCENDING).limit(100))
             )
+            opponent_queue = None
+            for candidate in candidates:
+                candidate_id = int(candidate["user_id"])
+                try:
+                    candidate_member = guild.get_member(candidate_id) or await guild.fetch_member(candidate_id)
+                except discord.NotFound:
+                    await self.db_call(self.matchmaking_queue.update_one, {
+                        "queue_id": candidate["queue_id"], "status": "waiting",
+                    }, {"$set": {"status": "cancelled", "cancel_reason": "user_left_server",
+                                 "cancelled_at": datetime.now(timezone.utc)}})
+                    continue
+                except discord.HTTPException:
+                    # Do not break the queue if Discord temporarily cannot resolve a member.
+                    continue
+                active_candidate = await self.db_call(self.duels.find_one, {
+                    "guild_id": guild.id,
+                    "status": {"$in": ["pending", "active", "disputed", "resolving"]},
+                    "$or": [{"challenger_id": candidate_id}, {"opponent_id": candidate_id}],
+                })
+                if active_candidate:
+                    await self.db_call(self.matchmaking_queue.update_one, {
+                        "queue_id": candidate["queue_id"], "status": "waiting",
+                    }, {"$set": {"status": "cancelled", "cancel_reason": "unfinished_duel",
+                                 "cancelled_at": datetime.now(timezone.utc)}})
+                    stale_message_id = candidate.get("message_id")
+                    if stale_message_id:
+                        try:
+                            stale_message = await channel.fetch_message(int(stale_message_id))
+                            await stale_message.edit(
+                                content=f"Queue closed for <@{candidate_id}> because they have an unfinished duel.",
+                                embed=None, view=None,
+                            )
+                        except (discord.NotFound, discord.Forbidden, discord.HTTPException):
+                            pass
+                    continue
+                opponent_queue = candidate
+                break
             role_id = config.get("matchmaking_ping_role_id")
             ping_role = guild.get_role(int(role_id)) if role_id else None
             ping = ping_role.mention if ping_role else ""
@@ -1703,10 +1740,18 @@ class IngloTiersCog(commands.Cog):
         if not rows:
             await interaction.response.send_message("There are no disputed matchmaking duels.", ephemeral=True)
             return
-        lines = [
-            f"• {row['duel_id']} · **{row['gamemode']}** · <@{row['challenger_id']}> vs <@{row['opponent_id']}>"
-            for row in rows
-        ]
+        lines = []
+        for row in rows:
+            reports = row.get("reports", {}) or {}
+            first = (reports.get(str(row["challenger_id"])) or {}).get("winner_id")
+            second = (reports.get(str(row["opponent_id"])) or {}).get("winner_id")
+            first_text = f"<@{first}>" if first else "not submitted"
+            second_text = f"<@{second}>" if second else "not submitted"
+            lines.append(
+                f"• `{row['duel_id']}` · **{row['gamemode']}** · "
+                f"<@{row['challenger_id']}> vs <@{row['opponent_id']}>\n"
+                f"  Player 1 reported: {first_text} · Player 2 reported: {second_text}"
+            )
         await interaction.response.send_message(
             embed=discord.Embed(title="⚠️ Disputed matchmaking duels", description="\n".join(lines), colour=0xE67E22),
             ephemeral=True,
