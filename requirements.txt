@@ -5,3 +5,6 @@ aiohttp>=3.9.0,<4.0
 
 # PostgreSQL storage so counters and bot data survive Render restarts/deploys
 asyncpg>=0.29.0,<1.0.0
+
+# MongoDB Atlas storage for the IngloTiers feature set (including mongodb+srv DNS support)
+pymongo[srv]>=4.6.3,<5.0
