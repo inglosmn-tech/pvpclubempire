@@ -17,9 +17,9 @@ The ZIP contains `main.py`, `requirements.txt`, `README.md`, `.env.example` and 
 |---|---:|---|
 | `BOT_TOKEN` | Yes | Discord bot token |
 | `DATABASE_URL` | Yes on Render | Neon/PostgreSQL connection string |
-| `PORT` | Render-provided | IngloTiers website port; do not set this yourself |
-| `MONGO_URI` | Required for IngloTiers | MongoDB Atlas connection string (starts with `mongodb+srv://` or `mongodb://`) |
-| `DISCORD_GUILD_ID` | Optional | Discord server ID used to select the public IngloTiers website data |
+| `PORT` | Render-provided | PvPClubTiers website port; do not set this yourself |
+| `MONGO_URI` | Required for PvPClubTiers | MongoDB Atlas connection string (starts with `mongodb+srv://` or `mongodb://`) |
+| `DISCORD_GUILD_ID` | Optional | Discord server ID used to select the public PvPClubTiers website data |
 
 ### Optional environment variables
 
@@ -58,7 +58,7 @@ Give the bot the permissions needed for the features you enable: Manage Roles, M
 
 ## First-time setup
 
-1. Set `BOT_TOKEN`, `DATABASE_URL` and `MONGO_URI` in Render → Environment. Neon/PostgreSQL remains for existing PVPClub features; MongoDB Atlas stores IngloTiers data.
+1. Set `BOT_TOKEN`, `DATABASE_URL` and `MONGO_URI` in Render → Environment. Neon/PostgreSQL remains for existing PVPClub features; MongoDB Atlas stores PvPClubTiers data.
 2. Set `DATABASE_STORAGE_LIMIT_MB` to the real limit shown by your Neon plan if you want percentage warnings.
 3. Enable the Discord gateway intents above. Message Content Intent is required for `?` prefix commands and trivia answer checking.
 4. Deploy, then run the setup commands below in your server.
@@ -75,7 +75,7 @@ Give the bot the permissions needed for the features you enable: Manage Roles, M
 - `?ticketsetup` — create the ticket panel.
 - `?tierwatchsetup #tier-announcements` — configure official MCTiers watch alerts.
 - `?eventsetup #events` — configure events and the Event Ping opt-in panel.
-- `?tiersetup` — create the 10 shared LT5–HT1 tier roles, 11 gamemode tester roles, the player-created test-ticket panel, and IngloTiers channels. Requires `MONGO_URI`.
+- `?tiersetup` — create the 10 shared LT5–HT1 tier roles, 11 gamemode tester roles, the player-created test-ticket panel, and PvPClubTiers channels. Requires `MONGO_URI`.
 - `?triviasetup` — create/configure `#trivia` and start a new question every 20 minutes. Correct answers earn one point.
 - `?triviastop` — pause scheduled trivia.
 - `?spamchannel` — mark the current channel as a spam zone where normal bot AutoMod is bypassed but the anti-macro human check stays active. Use `?spamchannel off` to disable it or `?spamchannel status` to check.
@@ -85,9 +85,9 @@ Give the bot the permissions needed for the features you enable: Manage Roles, M
 ## Useful commands
 
 - `/tier` — official MCTiers player lookup. The old `/mctiers` command is not registered.
-- `/ign`, `/tiers`, `/profile`, `/tier-leaderboard`, `/tier-rank`, `/search`, `/compare`, `/history`, `/recent` — IngloTiers player commands.
-- `/set-tier` — record a result from a claimed player test ticket. `/claim`, `/unclaim`, `/close` also manage IngloTiers test tickets.
-- `/testerstats`, `/testerboard`, `/tierban`, `/tierunban`, `/tier-adjust`, `/tier-recalculate`, `/tier-stats`, `/tier-cooldowns` — IngloTiers staff and tier administration.
+- `/ign`, `/tiers`, `/profile`, `/tier-leaderboard`, `/tier-rank`, `/search`, `/compare`, `/history`, `/recent` — PvPClubTiers player commands.
+- `/set-tier` — record a result from a claimed player test ticket. `/claim`, `/unclaim`, `/close` also manage PvPClubTiers test tickets.
+- `/testerstats`, `/testerboard`, `/tierban`, `/tierunban`, `/tier-adjust`, `/tier-recalculate`, `/tier-stats`, `/tier-cooldowns` — PvPClubTiers staff and tier administration.
 - `/duel`, `/duel-score`, `/duel-cancel`, `/elo`, `/elo-leaderboard` — competitive duels with ELO ratings and win/loss tracking.
 - `/trivia-leaderboard` — trivia points leaderboard.
 - `/tierwatch`, `/tierunwatch`, `/tierwatchlist` — manage official profile change tracking.
