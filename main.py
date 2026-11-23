@@ -59,7 +59,7 @@ def default_data() -> dict[str, Any]:
         "warnings": {}, "modlog_channels": {}, "logs_channels": {},
         "event_settings": {}, "events": {}, "tier_watch_channels": {},
         "tier_watchlists": {}, "automod_settings": {}, "automod_config": {},
-        "automod_strikes": {}, "meow_role_config": {}, "suggestion_channels": {},
+        "automod_strikes": {}, "automod_spam_events": {}, "meow_role_config": {}, "suggestion_channels": {},
         "welcome_channels": {}, "autoroles": {}, "birthday_channels": {},
         "level_config": {}, "storage_meta": {"updated_at": 0.0},
     }
@@ -405,6 +405,19 @@ class DataStore:
                     strikes[key] = values
                 else:
                     strikes.pop(key, None)
+
+        spam_events = self.data.get("automod_spam_events", {})
+        if isinstance(spam_events, dict):
+            cutoff = now - 24 * 3600
+            for key in list(spam_events):
+                values = [
+                    float(ts) for ts in spam_events.get(key, [])
+                    if isinstance(ts, (int, float)) and float(ts) >= cutoff
+                ]
+                if values:
+                    spam_events[key] = values[-20:]
+                else:
+                    spam_events.pop(key, None)
 
     async def save(self):
         async with self.lock:
