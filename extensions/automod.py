@@ -226,6 +226,7 @@ class AutoModEngine:
         self.macro_messages: dict[tuple[int, int, int], deque[tuple[float, str]]] = defaultdict(deque)
         self.macro_pending: set[tuple[int, int, int]] = set()
         self.macro_verified: dict[tuple[int, int, int], float] = {}
+        self.spam_cooldowns: dict[tuple[int, int], float] = {}
         self.ai_last_check: dict[tuple[int, int], float] = {}
         self._ai_locks: dict[int, asyncio.Lock] = {}
 
@@ -611,6 +612,15 @@ class AutoModEngine:
         if severity is None and modules.get("spam", True) is not False:
             now = time.monotonic()
             key = (guild.id, message.author.id)
+            if self.spam_cooldowns.get(key, 0.0) > now:
+                # Treat a continuous burst as one incident, but keep deleting
+                # additional messages during the short cleanup window.
+                try:
+                    await message.delete()
+                except (discord.Forbidden, discord.NotFound, discord.HTTPException):
+                    pass
+                return True
+            self.spam_cooldowns.pop(key, None)
             entries = self.messages[key]
             content = normalize_text(message.content)[:500]
             while entries and now - entries[0][0] > 10:
@@ -631,6 +641,9 @@ class AutoModEngine:
             return False
         if severity == "spam":
             await self._handle_spam_violation(message, reason)
+            key = (guild.id, message.author.id)
+            self.messages.pop(key, None)
+            self.spam_cooldowns[key] = time.monotonic() + 10
         else:
             await self._punish(message, severity, reason)
         return True
@@ -662,6 +675,9 @@ class AutoModCog(commands.Cog):
         for key, expiry in list(self.engine.macro_verified.items()):
             if now > expiry:
                 self.engine.macro_verified.pop(key, None)
+        for key, expiry in list(self.engine.spam_cooldowns.items()):
+            if now > expiry:
+                self.engine.spam_cooldowns.pop(key, None)
         for key, checked_at in list(self.engine.ai_last_check.items()):
             if now - checked_at > 120:
                 self.engine.ai_last_check.pop(key, None)
