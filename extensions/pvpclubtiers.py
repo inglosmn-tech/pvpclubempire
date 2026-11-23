@@ -194,26 +194,41 @@ class TesterApplicationPanelView(discord.ui.View):
     @discord.ui.button(label="Apply to become a tester", style=discord.ButtonStyle.primary,
                        emoji="🧪", custom_id="pvpclubtiers:tester-app:apply")
     async def apply(self, interaction: discord.Interaction, button: discord.ui.Button):
-        if not await self.cog.require_db(interaction):
+        # Acknowledge the button click before querying MongoDB. Discord requires
+        # an interaction response within a few seconds; database reads can take longer.
+        if self.cog.db is None:
+            await self.cog.require_db(interaction)
             return
-        guild = interaction.guild
-        if guild is None:
-            await interaction.response.send_message("Applications can only be submitted inside the server.", ephemeral=True)
-            return
-        config = await self.cog.setting(guild.id)
-        review_channel_id = config.get("tester_app_review_channel_id")
-        review_channel = guild.get_channel(int(review_channel_id)) if review_channel_id else None
-        if not isinstance(review_channel, discord.TextChannel):
+        if interaction.guild is None:
             await interaction.response.send_message(
-                "Tester applications are not configured yet. Ask an administrator to run ?testerappsetup #review-channel.",
+                "Applications can only be submitted inside the server.",
                 ephemeral=True,
             )
             return
-        await interaction.response.send_message(
-            "Choose the gamemode you want to become a tester for.",
-            view=TesterApplicationModeSelectView(self.cog),
-            ephemeral=True,
-        )
+
+        await interaction.response.defer(ephemeral=True, thinking=True)
+        try:
+            config = await self.cog.setting(interaction.guild.id)
+            review_channel_id = config.get("tester_app_review_channel_id")
+            review_channel = interaction.guild.get_channel(int(review_channel_id)) if review_channel_id else None
+            if not isinstance(review_channel, discord.TextChannel):
+                await interaction.followup.send(
+                    "Tester applications are not configured yet. Ask an administrator to run ?testerappsetup #review-channel.",
+                    ephemeral=True,
+                )
+                return
+
+            await interaction.followup.send(
+                "Choose the gamemode you want to become a tester for.",
+                view=TesterApplicationModeSelectView(self.cog),
+                ephemeral=True,
+            )
+        except Exception:
+            log.exception("Could not open tester application form for user %s", interaction.user.id)
+            await interaction.followup.send(
+                "I couldn't load the application form. Please try again in a moment.",
+                ephemeral=True,
+            )
 
 
 class TesterApplicationModeSelect(discord.ui.Select):
