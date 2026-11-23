@@ -78,6 +78,7 @@ Give the bot the permissions needed for the features you enable: Manage Roles, M
 - `?tiersetup` — create the 10 shared LT5–HT1 tier roles, 11 gamemode tester roles, the player-created test-ticket panel, and IngloTiers channels. Requires `MONGO_URI`.
 - `?triviasetup` — create/configure `#trivia` and start a new question every 20 minutes. Correct answers earn one point.
 - `?triviastop` — pause scheduled trivia.
+- `?spamchannel` — turn the current channel into an AutoMod-exempt spam zone while keeping the separate anti-macro detector active. Use `?spamchannel off` to turn it off or `?spamchannel status` to check it.
 - `?storage` — inspect database storage usage.
 - `/meow-setup` — one-click XP/voice leveling setup.
 
@@ -91,7 +92,7 @@ Give the bot the permissions needed for the features you enable: Manage Roles, M
 - `/meowstreak`, `/meowstats`, `/meowboard` — meow statistics and leaderboard.
 - `/suggest`, `/birthday`, `/birthdayremove` — community utilities.
 - `/rank`, `/leaderboard`, `/level-admin`, `/meow-reset` — meow leveling.
-- `/automod toggle`, `/automod module`, `/automod addterm`, `/automod removeterm`, `/automod immune-role`, `/automod immune-channel`, `/automod invite-code`, `/automod setlog` — AutoMod configuration.
+- `/automod toggle`, `/automod module`, `/automod addterm`, `/automod removeterm`, `/automod immune-role`, `/automod immune-channel`, `/automod invite-code`, `/automod setlog` — AutoMod configuration. Spam-channel mode bypasses the usual bot AutoMod checks only in the marked channel; a separate timing-and-repetition anti-macro check continues to run.
 
 ## Prefix and slash command changes
 
