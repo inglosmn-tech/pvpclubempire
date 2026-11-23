@@ -590,12 +590,35 @@ class PvPClubTiersCog(commands.Cog):
         now = datetime.now(timezone.utc)
         username = clean_username(username) if username else None
         display = username or member.display_name
-        update = {"$set": {"updated_at": now}, "$setOnInsert": {
-            "guild_id": guild_id, "discord_id": member.id, "username": display,
-            "username_lc": display.casefold(), "tiers": {}, "cooldowns": {}, "elo": 1000, "created_at": now}}
+
+        # Never place the same MongoDB field in both $set and $setOnInsert.
+        # When a Minecraft username is supplied (for example from a claimed
+        # test ticket), update the profile name with $set. Otherwise, initialize
+        # the display name only when this player document is first created.
+        insert_fields = {
+            "guild_id": guild_id,
+            "discord_id": member.id,
+            "tiers": {},
+            "cooldowns": {},
+            "elo": 1000,
+            "created_at": now,
+        }
+        set_fields = {"updated_at": now}
         if username:
-            update["$set"].update({"username": username, "username_lc": username.casefold()})
-        await self.db_call(self.players.update_one, {"guild_id": guild_id, "discord_id": member.id}, update, upsert=True)
+            set_fields.update({"username": username, "username_lc": username.casefold()})
+        else:
+            insert_fields.update({
+                "username": display,
+                "username_lc": display.casefold(),
+            })
+
+        update = {"$set": set_fields, "$setOnInsert": insert_fields}
+        await self.db_call(
+            self.players.update_one,
+            {"guild_id": guild_id, "discord_id": member.id},
+            update,
+            upsert=True,
+        )
         return await self.get_player(guild_id, member.id)
 
     def staff_or_tester(self, member: discord.Member, gamemode: str) -> bool:
