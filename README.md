@@ -75,7 +75,7 @@ Give the bot the permissions needed for the features you enable: Manage Roles, M
 - `?ticketsetup` — create the ticket panel.
 - `?tierwatchsetup #tier-announcements` — configure official MCTiers watch alerts.
 - `?eventsetup #events` — configure events and the Event Ping opt-in panel.
-- `?tiersetup` — create the 10 shared LT5–HT1 tier roles, 9 gamemode tester roles (Spear Mace, Sword, Axe, UHC, Elytra, Creeper, Diamond SMP, Mace and SMP), the player-created test-ticket panel, and PvPClubTiers channels. Requires `MONGO_URI`.
+- `?tiersetup` — create the 10 shared LT5–HT1 tier roles, 10 gamemode tester roles (Spear Mace, Sword, Axe, UHC, Elytra, Creeper, Diamond SMP, Mace, SMP and Cart), the player-created test-ticket panel, and PvPClubTiers channels. Requires `MONGO_URI`.
 - `?settier <gamemode> <ign>` — server-owner-only manual tier assignment. Looks up an existing PvPClubTiers player by Minecraft username and opens a tier selector; records the change in history and updates their overall tier role.
 - Tier-test requests have no per-gamemode cooldown. Members can request another test after their previous ticket is closed.
 - `?testerappsetup #review-channel` — post a tester application panel in the current channel and send applications to the selected review channel. Applicants choose a gamemode and provide their Minecraft username and experience; only the server owner can accept or reject them. Accepted applicants receive only that gamemode's Tester role. Run `?tiersetup` first. Requires `MONGO_URI`.
