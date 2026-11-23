@@ -76,6 +76,7 @@ Give the bot the permissions needed for the features you enable: Manage Roles, M
 - `?tierwatchsetup #tier-announcements` — configure official MCTiers watch alerts.
 - `?eventsetup #events` — configure events and the Event Ping opt-in panel.
 - `?tiersetup` — create the 10 shared LT5–HT1 tier roles, 9 gamemode tester roles (Spear Mace, Sword, Axe, UHC, Elytra, Creeper, Diamond SMP, Mace and SMP), the player-created test-ticket panel, and PvPClubTiers channels. Requires `MONGO_URI`.
+- `?testerappsetup #review-channel` — post a tester application panel in the current channel and send applications to the selected review channel. Applicants choose a gamemode and provide their Minecraft username and experience; only the server owner can accept or reject them. Accepted applicants receive only that gamemode's Tester role. Run `?tiersetup` first. Requires `MONGO_URI`.
 - `?triviasetup` — create/configure `#trivia` and start a new question every 20 minutes. Correct answers earn one point.
 - `?triviastop` — pause scheduled trivia.
 - `?spamchannel` — mark the current channel as a spam zone where normal bot AutoMod is bypassed but the anti-macro human check stays active. Use `?spamchannel off` to disable it or `?spamchannel status` to check.
