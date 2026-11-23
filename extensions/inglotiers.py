@@ -246,11 +246,123 @@ class DuelInviteView(discord.ui.View):
         await self.decide(interaction, False)
 
 
+
+class MatchmakingPanelView(discord.ui.View):
+    def __init__(self, cog):
+        super().__init__(timeout=None)
+        self.cog = cog
+
+    async def set_ping_role(self, interaction, enabled):
+        if not await self.cog.require_db(interaction):
+            return
+        config = await self.cog.setting(interaction.guild.id)
+        role_id = config.get("matchmaking_ping_role_id")
+        role = interaction.guild.get_role(int(role_id)) if role_id else None
+        if role is None:
+            await interaction.response.send_message("Matchmaking pings are not configured yet. Ask staff to run ?tiersetup.", ephemeral=True)
+            return
+        member = interaction.user
+        try:
+            if enabled and role not in member.roles:
+                await member.add_roles(role, reason="Opted into matchmaking pings")
+                message = "✅ You will now receive matchmaking pings."
+            elif not enabled and role in member.roles:
+                await member.remove_roles(role, reason="Opted out of matchmaking pings")
+                message = "✅ You will no longer receive matchmaking pings."
+            else:
+                message = "You are already set up for matchmaking pings."
+        except discord.Forbidden:
+            message = "I cannot update that role. Staff must move my bot role above Matchmaking Ping."
+        await interaction.response.send_message(message, ephemeral=True)
+
+    @discord.ui.button(label="Enable Matchmaking Pings", style=discord.ButtonStyle.success,
+                       emoji="🔔", custom_id="inglotiers:mm-pings-on")
+    async def enable_pings(self, interaction, button):
+        await self.set_ping_role(interaction, True)
+
+    @discord.ui.button(label="Disable Matchmaking Pings", style=discord.ButtonStyle.secondary,
+                       emoji="🔕", custom_id="inglotiers:mm-pings-off")
+    async def disable_pings(self, interaction, button):
+        await self.set_ping_role(interaction, False)
+
+
+class MatchmakingQueueView(discord.ui.View):
+    def __init__(self, cog):
+        super().__init__(timeout=None)
+        self.cog = cog
+
+    @discord.ui.button(label="Cancel queue", style=discord.ButtonStyle.danger,
+                       emoji="✖️", custom_id="inglotiers:mm-queue-cancel")
+    async def cancel(self, interaction, button):
+        await self.cog.cancel_matchmaking_queue(interaction)
+
+
+class DuelModeSelect(discord.ui.Select):
+    def __init__(self, cog):
+        self.cog = cog
+        super().__init__(
+            placeholder="Choose the gamemode you want to duel in…",
+            min_values=1, max_values=1,
+            options=[discord.SelectOption(label=mode, value=mode) for mode in GAMEMODES],
+            custom_id="inglotiers:mm-mode-select",
+        )
+
+    async def callback(self, interaction):
+        mode = self.values[0]
+        await interaction.response.send_message(
+            embed=discord.Embed(
+                title="⚔️ Join matchmaking?",
+                description=f"You selected **{mode}**. Confirm to enter the queue. You will be matched with the next available player in this gamemode. Both players must confirm the winner after the duel.",
+                colour=0x55DDEB,
+            ),
+            view=DuelQueueConfirmView(self.cog, mode),
+            ephemeral=True,
+        )
+
+
+class DuelGamemodeSelectView(discord.ui.View):
+    def __init__(self, cog):
+        super().__init__(timeout=180)
+        self.add_item(DuelModeSelect(cog))
+
+
+class DuelQueueConfirmView(discord.ui.View):
+    def __init__(self, cog, gamemode):
+        super().__init__(timeout=180)
+        self.cog = cog
+        self.gamemode = gamemode
+
+    @discord.ui.button(label="Confirm and find opponent", style=discord.ButtonStyle.success, emoji="⚔️")
+    async def confirm(self, interaction, button):
+        await self.cog.queue_for_duel(interaction, self.gamemode)
+
+    @discord.ui.button(label="Go back", style=discord.ButtonStyle.secondary)
+    async def cancel(self, interaction, button):
+        await interaction.response.edit_message(content="Matchmaking cancelled.", embed=None, view=None)
+
+
+class DuelResultView(discord.ui.View):
+    def __init__(self, cog):
+        super().__init__(timeout=None)
+        self.cog = cog
+
+    @discord.ui.button(label="Player 1 won", style=discord.ButtonStyle.success,
+                       custom_id="inglotiers:mm-result-player-1")
+    async def player_one_won(self, interaction, button):
+        await self.cog.record_matchmaking_result(interaction, player_number=1)
+
+    @discord.ui.button(label="Player 2 won", style=discord.ButtonStyle.primary,
+                       custom_id="inglotiers:mm-result-player-2")
+    async def player_two_won(self, interaction, button):
+        await self.cog.record_matchmaking_result(interaction, player_number=2)
+
+
 class IngloTiersCog(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
         self.mongo_client = None
         self.db = None
+        self.matchmaking_queue_lock = asyncio.Lock()
 
     async def db_call(self, function, *args, **kwargs):
         if self.db is None:
@@ -272,6 +384,7 @@ class IngloTiersCog(commands.Cog):
                 self.activity = self.db["activity"]
                 self.tester_stats = self.db["tester_stats"]
                 self.duels = self.db["duels"]
+                self.matchmaking_queue = self.db["matchmaking_queue"]
                 self.trivia_scores = self.db["trivia_scores"]
                 self.trivia_answers = self.db["trivia_answers"]
                 await asyncio.to_thread(self.players.create_index, [("guild_id", ASCENDING), ("discord_id", ASCENDING)], unique=True)
@@ -279,6 +392,8 @@ class IngloTiersCog(commands.Cog):
                 await asyncio.to_thread(self.tickets.create_index, "channel_id", unique=True, sparse=True)
                 await asyncio.to_thread(self.history.create_index, [("guild_id", ASCENDING), ("created_at", DESCENDING)])
                 await asyncio.to_thread(self.duels.create_index, "duel_id", unique=True)
+                await asyncio.to_thread(self.matchmaking_queue.create_index, [("guild_id", ASCENDING), ("gamemode", ASCENDING), ("status", ASCENDING), ("created_at", ASCENDING)])
+                await asyncio.to_thread(self.matchmaking_queue.create_index, [("guild_id", ASCENDING), ("user_id", ASCENDING), ("status", ASCENDING)])
                 await asyncio.to_thread(self.trivia_scores.create_index, [("guild_id", ASCENDING), ("user_id", ASCENDING)], unique=True)
                 await asyncio.to_thread(self.trivia_answers.create_index, [("guild_id", ASCENDING), ("question_id", ASCENDING), ("user_id", ASCENDING)], unique=True)
                 log.info("IngloTiers MongoDB connected.")
@@ -293,6 +408,9 @@ class IngloTiersCog(commands.Cog):
         self.bot.add_view(TierRequestPanelView(self))
         self.bot.add_view(TicketControlsView(self))
         self.bot.add_view(DuelInviteView(self))
+        self.bot.add_view(MatchmakingPanelView(self))
+        self.bot.add_view(MatchmakingQueueView(self))
+        self.bot.add_view(DuelResultView(self))
         self.trivia_watcher.start()
 
     def cog_unload(self):
@@ -408,6 +526,7 @@ class IngloTiersCog(commands.Cog):
                 "activity_channel_id": activity.id, "logs_channel_id": logs.id,
                 "matchmaking_channel_id": matchmaking.id, "website_public": True,
                 "setup_at": datetime.now(timezone.utc)}}, upsert=True)
+            await self.ensure_matchmaking_panel(guild)
             config = await self.setting(guild.id)
             panel = None
             if config.get("request_panel_message_id"):
