@@ -1955,6 +1955,13 @@ class IngloTiersCog(commands.Cog):
         if not await self.require_db(interaction):
             return
         duel = await self.db_call(self.duels.find_one, {"guild_id": interaction.guild.id, "duel_id": duel_id.strip()})
+        if duel and duel.get("matchmaking") and duel.get("status") in ("active", "disputed", "resolving"):
+            await interaction.response.send_message(
+                "A matched matchmaking duel cannot be cancelled by a participant. "
+                "Both players must report the result, or staff can review it with /duel-review.",
+                ephemeral=True,
+            )
+            return
         if not duel or interaction.user.id not in (duel["challenger_id"], duel["opponent_id"]) or duel.get("status") not in ("pending", "active"):
             await interaction.response.send_message("You cannot cancel that duel.", ephemeral=True)
             return
