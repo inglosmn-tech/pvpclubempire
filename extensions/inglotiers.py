@@ -108,6 +108,16 @@ def move_tier(tier: str | None, direction: int) -> str | None:
     return TIERS[max(0, min(len(TIERS) - 1, index + direction))]
 
 
+DUEL_TIER_ORDER = ["LT5", "LT4", "LT3", "LT2", "LT1", "HT1", "HT2", "HT3", "HT4", "HT5"]
+
+
+def move_duel_tier(tier: str | None, steps: int) -> str:
+    if tier not in DUEL_TIER_ORDER:
+        return "LT5"
+    index = DUEL_TIER_ORDER.index(tier)
+    return DUEL_TIER_ORDER[max(0, min(len(DUEL_TIER_ORDER) - 1, index + steps))]
+
+
 def safe_player(player: dict) -> dict:
     tiers = player.get("tiers", {}) or {}
     total_points = sum(POINTS.get(tier, 0) for tier in tiers.values())
@@ -123,6 +133,7 @@ def safe_player(player: dict) -> dict:
         "wins": int(player.get("wins", 0)),
         "losses": int(player.get("losses", 0)),
         "duelsPlayed": int(player.get("duels_played", 0)),
+        "duelLossStreaks": player.get("duel_loss_streaks", {}) or {},
         "winRate": round((int(player.get("wins", 0)) / max(1, int(player.get("wins", 0)) + int(player.get("losses", 0)))) * 100, 1),
         "createdAt": player.get("created_at").isoformat() if player.get("created_at") else None,
     }
@@ -1171,40 +1182,600 @@ class IngloTiersCog(commands.Cog):
                            {"$set": {"tier_banned": False}, "$unset": {"tier_ban_reason": ""}}, upsert=True)
         await interaction.response.send_message(f"{member.mention} can request tests again.", ephemeral=True)
 
-    @app_commands.command(name="duel", description="Challenge another player to a tier duel.")
-    @app_commands.guild_only()
-    @app_commands.choices(gamemode=MODE_OPTIONS, best_of=BEST_OF_OPTIONS)
-    async def duel(self, interaction, opponent: discord.Member, gamemode: app_commands.Choice[str],
-                   best_of: app_commands.Choice[int]):
+
+    async def ensure_matchmaking_panel(self, guild: discord.Guild):
+        config = await self.setting(guild.id)
+        channel_id = config.get("matchmaking_channel_id")
+        channel = guild.get_channel(int(channel_id)) if channel_id else None
+        if not isinstance(channel, discord.TextChannel):
+            return
+        role_id = config.get("matchmaking_ping_role_id")
+        ping_role = guild.get_role(int(role_id)) if role_id else None
+        if ping_role is None:
+            ping_role = discord.utils.get(guild.roles, name="Matchmaking Ping")
+            if ping_role is None:
+                ping_role = await guild.create_role(
+                    name="Matchmaking Ping", colour=discord.Colour(0x55DDEB),
+                    mentionable=True, reason="IngloTiers matchmaking notifications",
+                )
+            elif not ping_role.mentionable:
+                await ping_role.edit(mentionable=True, reason="Enable matchmaking role mentions")
+            await self.db_call(self.settings.update_one, {"guild_id": guild.id}, {
+                "$set": {"matchmaking_ping_role_id": ping_role.id}
+            })
+        panel = discord.Embed(
+            title="⚔️ Matchmaking",
+            description=(
+                "Use **/duel** to join the queue and choose a gamemode. You will be matched "
+                "with the next player waiting in that same gamemode.\\n\\n"
+                "• Win a duel: move **one tier up** in that gamemode.\\n"
+                "• Lose twice in a row: move **one tier down** in that gamemode.\\n"
+                "• Loss streaks are tracked separately for each gamemode.\\n"
+                "• Both players must independently confirm the same winner. If you disagree, "
+                "no tiers change and staff will review the result.\\n\\n"
+                "Use the buttons below to subscribe or unsubscribe from matchmaking pings."
+            ),
+            colour=0x55DDEB,
+        )
+        panel.set_footer(text="IngloTiers • Matchmaking")
+        message = None
+        message_id = config.get("matchmaking_panel_message_id")
+        if message_id:
+            try:
+                message = await channel.fetch_message(int(message_id))
+            except (discord.NotFound, discord.Forbidden, discord.HTTPException, ValueError):
+                message = None
+        if message:
+            await message.edit(embed=panel, view=MatchmakingPanelView(self))
+        else:
+            message = await channel.send(embed=panel, view=MatchmakingPanelView(self))
+            await self.db_call(self.settings.update_one, {"guild_id": guild.id}, {
+                "$set": {"matchmaking_panel_message_id": message.id}
+            })
+
+    @commands.Cog.listener()
+    async def on_ready(self):
+        if self.db is None:
+            return
+        for guild in self.bot.guilds:
+            try:
+                config = await self.setting(guild.id)
+                if config.get("matchmaking_channel_id"):
+                    await self.ensure_matchmaking_panel(guild)
+                # A Mongo transaction is all-or-nothing, so stale resolving states
+                # can safely be sent to staff review after a restart.
+                cutoff = datetime.now(timezone.utc).timestamp() - 15 * 60
+                await self.db_call(self.duels.update_many, {
+                    "guild_id": guild.id, "matchmaking": True, "status": "resolving",
+                    "resolving_at": {"$lt": datetime.fromtimestamp(cutoff, timezone.utc)},
+                }, {"$set": {"status": "disputed", "recovery_note": "Settlement interrupted; staff review required."}})
+            except Exception:
+                log.exception("Could not restore matchmaking for guild %s", guild.id)
+
+    async def queue_for_duel(self, interaction: discord.Interaction, gamemode: str):
         if not await self.require_db(interaction):
             return
-        if opponent.bot or opponent.id == interaction.user.id:
-            await interaction.response.send_message("Choose another human player.", ephemeral=True)
+        if gamemode not in GAMEMODES:
+            await interaction.response.send_message("That gamemode is not supported.", ephemeral=True)
             return
-        active_duel = await self.db_call(self.duels.find_one, {
-            "guild_id": interaction.guild.id,
-            "status": {"$in": ["pending", "active", "disputed"]},
-            "$or": [
-                {"challenger_id": interaction.user.id}, {"opponent_id": interaction.user.id},
-                {"challenger_id": opponent.id}, {"opponent_id": opponent.id},
-            ],
-        })
-        if active_duel:
+        guild = interaction.guild
+        config = await self.setting(guild.id)
+        channel = guild.get_channel(int(config.get("matchmaking_channel_id", 0)))
+        if not isinstance(channel, discord.TextChannel):
             await interaction.response.send_message(
-                "One of these players already has an unfinished duel.", ephemeral=True
+                "Matchmaking is not set up yet. Ask staff to run ?tiersetup.", ephemeral=True
             )
             return
-        duel_id = uuid4().hex[:10]
-        await self.db_call(self.duels.insert_one, {
-            "duel_id": duel_id, "guild_id": interaction.guild.id, "challenger_id": interaction.user.id,
-            "opponent_id": opponent.id, "gamemode": gamemode.value, "best_of": best_of.value,
-            "status": "pending", "reports": {}, "created_at": datetime.now(timezone.utc)})
-        e = discord.Embed(title="⚔️ IngloTiers duel challenge",
-                          description=f"{interaction.user.mention} challenged {opponent.mention} in **{gamemode.value}**.\nBest of {best_of.value}\nDuel ID: {duel_id}",
-                          colour=0x55DDEB)
-        await interaction.response.send_message(content=opponent.mention, embed=e, view=DuelInviteView(self))
-        msg = await interaction.original_response()
-        await self.db_call(self.duels.update_one, {"duel_id": duel_id}, {"$set": {"message_id": msg.id}})
+
+        async with self.matchmaking_queue_lock:
+            active = await self.db_call(self.duels.find_one, {
+                "guild_id": guild.id,
+                "status": {"$in": ["pending", "active", "disputed", "resolving"]},
+                "$or": [{"challenger_id": interaction.user.id}, {"opponent_id": interaction.user.id}],
+            })
+            if active:
+                await interaction.response.send_message(
+                    "You already have an unfinished duel. Finish or resolve it before joining matchmaking.",
+                    ephemeral=True,
+                )
+                return
+            queued = await self.db_call(self.matchmaking_queue.find_one, {
+                "guild_id": guild.id, "user_id": interaction.user.id, "status": "waiting",
+            })
+            if queued:
+                await interaction.response.send_message(
+                    f"You are already queued for **{queued.get('gamemode', 'a gamemode')}**. "
+                    "Use the Cancel queue button first.", ephemeral=True,
+                )
+                return
+            opponent_queue = await self.db_call(
+                lambda: self.matchmaking_queue.find_one({
+                    "guild_id": guild.id, "gamemode": gamemode, "status": "waiting",
+                    "user_id": {"$ne": interaction.user.id},
+                }, sort=[("created_at", ASCENDING)])
+            )
+            role_id = config.get("matchmaking_ping_role_id")
+            ping_role = guild.get_role(int(role_id)) if role_id else None
+            ping = ping_role.mention if ping_role else ""
+            now = datetime.now(timezone.utc)
+
+            if opponent_queue is None:
+                queue_id = uuid4().hex
+                await self.db_call(self.matchmaking_queue.insert_one, {
+                    "queue_id": queue_id, "guild_id": guild.id, "user_id": interaction.user.id,
+                    "gamemode": gamemode, "status": "waiting", "created_at": now,
+                })
+                try:
+                    message = await channel.send(
+                        content=f"{ping} {interaction.user.mention} is looking for a **{gamemode}** duel.",
+                        embed=discord.Embed(
+                            title="🔎 Looking for an opponent",
+                            description=f"{interaction.user.mention} is now queued for **{gamemode}**.",
+                            colour=0x55DDEB,
+                        ),
+                        view=MatchmakingQueueView(self),
+                        allowed_mentions=discord.AllowedMentions(roles=True, users=True, everyone=False),
+                    )
+                    await self.db_call(self.matchmaking_queue.update_one, {"queue_id": queue_id}, {
+                        "$set": {"message_id": message.id}
+                    })
+                except Exception:
+                    await self.db_call(self.matchmaking_queue.update_one, {"queue_id": queue_id}, {
+                        "$set": {"status": "cancelled", "cancelled_at": datetime.now(timezone.utc)}
+                    })
+                    raise
+                await interaction.response.send_message(
+                    f"✅ You are in the **{gamemode}** matchmaking queue. I will pair you with the next available player.",
+                    ephemeral=True,
+                )
+                return
+
+            duel_id = uuid4().hex[:10]
+            player_one_id = int(opponent_queue["user_id"])
+            player_two_id = interaction.user.id
+            current_queue_id = uuid4().hex
+            await self.db_call(self.duels.insert_one, {
+                "duel_id": duel_id, "guild_id": guild.id,
+                "challenger_id": player_one_id, "opponent_id": player_two_id,
+                "gamemode": gamemode, "status": "active", "matchmaking": True,
+                "reports": {}, "created_at": now, "started_at": now,
+                "queue_ids": [opponent_queue["queue_id"], current_queue_id],
+            })
+            try:
+                embed = discord.Embed(
+                    title="⚔️ Match found — duel started",
+                    description=(
+                        f"**Player 1:** <@{player_one_id}>\\n"
+                        f"**Player 2:** <@{player_two_id}>\\n"
+                        f"**Gamemode:** {gamemode}\\n"
+                        f"**Duel ID:** {duel_id}\\n\\n"
+                        "Play your duel first. Afterwards, both players must select the same winner below. "
+                        "Different reports go to staff review and do not change tiers."
+                    ),
+                    colour=0x55DDEB,
+                )
+                embed.set_footer(text="Each participant can submit one result.")
+                match_message = await channel.send(
+                    content=f"{ping} Match found: <@{player_one_id}> vs <@{player_two_id}>",
+                    embed=embed, view=DuelResultView(self),
+                    allowed_mentions=discord.AllowedMentions(roles=True, users=True, everyone=False),
+                )
+                await self.db_call(self.duels.update_one, {"duel_id": duel_id}, {
+                    "$set": {"result_message_id": match_message.id, "matchmaking_channel_id": channel.id}
+                })
+                await self.db_call(self.matchmaking_queue.update_one, {
+                    "queue_id": opponent_queue["queue_id"], "status": "waiting",
+                }, {"$set": {"status": "matched", "duel_id": duel_id, "matched_at": now}})
+                await self.db_call(self.matchmaking_queue.insert_one, {
+                    "queue_id": current_queue_id, "guild_id": guild.id, "user_id": player_two_id,
+                    "gamemode": gamemode, "status": "matched", "duel_id": duel_id,
+                    "message_id": match_message.id, "created_at": now, "matched_at": now,
+                })
+                old_message_id = opponent_queue.get("message_id")
+                if old_message_id:
+                    try:
+                        old_message = await channel.fetch_message(int(old_message_id))
+                        await old_message.edit(
+                            content=f"⚔️ <@{player_one_id}> has been matched with <@{player_two_id}> in **{gamemode}**.",
+                            embed=None, view=None,
+                        )
+                    except (discord.NotFound, discord.Forbidden, discord.HTTPException):
+                        pass
+            except Exception:
+                log.exception("Could not publish matchmaking duel %s", duel_id)
+                await self.db_call(self.duels.update_one, {"duel_id": duel_id, "status": "active"}, {
+                    "$set": {"status": "cancelled", "cancelled_at": datetime.now(timezone.utc)}
+                })
+                await self.db_call(self.matchmaking_queue.update_one, {
+                    "queue_id": opponent_queue["queue_id"], "status": "waiting",
+                }, {"$set": {"status": "waiting", "duel_id": None}})
+                await interaction.response.send_message(
+                    "I found an opponent but could not publish the match. Please try /duel again or contact staff.",
+                    ephemeral=True,
+                )
+                return
+            await interaction.response.send_message(
+                f"⚔️ Match found! You are paired with <@{player_one_id}> in **{gamemode}**. "
+                "Both players must confirm the result with the buttons in #matchmaking.",
+                ephemeral=True,
+            )
+
+    async def cancel_matchmaking_queue(self, interaction: discord.Interaction):
+        if not await self.require_db(interaction):
+            return
+        queue = await self.db_call(self.matchmaking_queue.find_one, {
+            "guild_id": interaction.guild.id, "message_id": interaction.message.id,
+            "user_id": interaction.user.id, "status": "waiting",
+        })
+        if not queue:
+            await interaction.response.send_message(
+                "This queue entry is no longer active, or it belongs to another player.", ephemeral=True,
+            )
+            return
+        updated = await self.db_call(self.matchmaking_queue.update_one, {
+            "queue_id": queue["queue_id"], "status": "waiting",
+        }, {"$set": {"status": "cancelled", "cancelled_at": datetime.now(timezone.utc)}})
+        if not updated.modified_count:
+            await interaction.response.send_message("This queue entry has already changed.", ephemeral=True)
+            return
+        await interaction.response.edit_message(
+            content=f"❌ <@{interaction.user.id}> cancelled their **{queue['gamemode']}** matchmaking request.",
+            embed=None, view=None,
+        )
+
+    async def record_matchmaking_result(self, interaction: discord.Interaction, player_number: int):
+        if not await self.require_db(interaction):
+            return
+        duel = await self.db_call(self.duels.find_one, {
+            "guild_id": interaction.guild.id, "result_message_id": interaction.message.id,
+            "matchmaking": True,
+        })
+        if not duel or duel.get("status") != "active":
+            await interaction.response.send_message("This duel is no longer accepting result confirmations.", ephemeral=True)
+            return
+        if interaction.user.id not in (duel["challenger_id"], duel["opponent_id"]):
+            await interaction.response.send_message("Only the two players in this duel can confirm its result.", ephemeral=True)
+            return
+        await interaction.response.defer(ephemeral=True)
+        winner_id = duel["challenger_id"] if player_number == 1 else duel["opponent_id"]
+        report_key = str(interaction.user.id)
+        await self.db_call(self.duels.update_one, {
+            "guild_id": interaction.guild.id, "duel_id": duel["duel_id"],
+            "status": "active", f"reports.{report_key}": {"$exists": False},
+        }, {"$set": {f"reports.{report_key}": {
+            "winner_id": winner_id, "submitted_at": datetime.now(timezone.utc),
+        }}})
+        duel = await self.db_call(self.duels.find_one, {
+            "guild_id": interaction.guild.id, "duel_id": duel["duel_id"],
+        })
+        reports = duel.get("reports", {})
+        if report_key not in reports:
+            await interaction.followup.send("You already submitted your result. It cannot be changed.", ephemeral=True)
+            return
+        if len(reports) < 2:
+            await interaction.followup.send(
+                "✅ Your result is saved. Waiting for the other player to confirm the same winner.",
+                ephemeral=True,
+            )
+            return
+        first_report = reports.get(str(duel["challenger_id"]), {}).get("winner_id")
+        second_report = reports.get(str(duel["opponent_id"]), {}).get("winner_id")
+        if first_report != second_report:
+            await self.db_call(self.duels.update_one, {
+                "guild_id": interaction.guild.id, "duel_id": duel["duel_id"], "status": "active",
+            }, {"$set": {"status": "disputed", "disputed_at": datetime.now(timezone.utc)}})
+            embed = discord.Embed(
+                title="⚠️ Duel disputed — staff review required",
+                description=(
+                    f"Both players submitted different winners for duel {duel['duel_id']}. "
+                    "No ELO or tier changes have been applied. Staff can inspect it with /duel-disputes."
+                ),
+                colour=0xE67E22,
+            )
+            await interaction.message.edit(embed=embed, view=None)
+            await interaction.followup.send(
+                "Your reports do not match. The duel is waiting for staff review; no tiers were changed.",
+                ephemeral=True,
+            )
+            await self.send_duel_log(interaction.guild, f"Duel {duel['duel_id']} was disputed because the players disagreed.")
+            return
+
+        claimed = await self.db_call(self.duels.update_one, {
+            "guild_id": interaction.guild.id, "duel_id": duel["duel_id"], "status": "active",
+        }, {"$set": {
+            "status": "resolving", "resolving_at": datetime.now(timezone.utc), "winner_id": first_report,
+        }})
+        if not claimed.modified_count:
+            await interaction.followup.send("This duel is already being finalised. No duplicate tier change was applied.", ephemeral=True)
+            return
+        try:
+            outcome = await self.settle_matchmaking_duel(
+                interaction.guild, duel["duel_id"], int(first_report), interaction.user,
+            )
+        except Exception:
+            log.exception("Duel settlement failed for %s", duel["duel_id"])
+            await self.db_call(self.duels.update_one, {
+                "guild_id": interaction.guild.id, "duel_id": duel["duel_id"], "status": "resolving",
+            }, {"$set": {"status": "disputed", "settlement_error": "Settlement failed; staff review required."}})
+            await interaction.followup.send(
+                "I could not safely apply this result. The duel has been moved to staff review; no partial tier update was committed.",
+                ephemeral=True,
+            )
+            return
+        await interaction.followup.send(
+            f"✅ Both players confirmed the result. <@{outcome['winner_id']}> won. "
+            f"<@{outcome['loser_id']}> now has a loss streak of {outcome['loser_streak']} in **{duel['gamemode']}**.",
+            ephemeral=True,
+        )
+
+    async def send_duel_log(self, guild: discord.Guild, message: str):
+        config = await self.setting(guild.id)
+        channel = guild.get_channel(int(config.get("logs_channel_id", 0)))
+        if channel:
+            try:
+                await channel.send(message)
+            except discord.HTTPException:
+                log.exception("Could not send duel audit log")
+
+    async def settle_matchmaking_duel(self, guild: discord.Guild, duel_id: str,
+                                      winner_id: int, actor: discord.abc.User):
+        duel = await self.db_call(self.duels.find_one, {"guild_id": guild.id, "duel_id": duel_id})
+        if not duel or duel.get("status") != "resolving" or not duel.get("matchmaking"):
+            raise RuntimeError("This matchmaking duel is not ready for settlement.")
+        first_id, second_id = int(duel["challenger_id"]), int(duel["opponent_id"])
+        if winner_id not in (first_id, second_id):
+            raise ValueError("The selected winner is not a participant in this duel.")
+        winner_id = int(winner_id)
+        loser_id = second_id if winner_id == first_id else first_id
+        members = {}
+        for user_id in (winner_id, loser_id):
+            members[user_id] = guild.get_member(user_id)
+            if members[user_id] is None:
+                members[user_id] = await guild.fetch_member(user_id)
+        now = datetime.now(timezone.utc)
+        outcome = {}
+
+        def apply_transaction():
+            with self.mongo_client.start_session() as session:
+                def transaction_body(active_session):
+                    outcome.clear()
+                    current_duel = self.duels.find_one({
+                        "guild_id": guild.id, "duel_id": duel_id, "status": "resolving",
+                    }, session=active_session)
+                    if not current_duel:
+                        raise RuntimeError("Duel settlement was already completed or claimed.")
+                    player_docs = {}
+                    for user_id in (winner_id, loser_id):
+                        member = members[user_id]
+                        player = self.players.find_one({
+                            "guild_id": guild.id, "discord_id": user_id,
+                        }, session=active_session)
+                        if player is None:
+                            player = {
+                                "guild_id": guild.id, "discord_id": user_id,
+                                "username": member.display_name, "username_lc": member.display_name.casefold(),
+                                "tiers": {}, "elo": 1000, "wins": 0, "losses": 0,
+                                "duels_played": 0, "duel_loss_streaks": {}, "created_at": now,
+                            }
+                        player_docs[user_id] = player
+
+                    winner_player = player_docs[winner_id]
+                    loser_player = player_docs[loser_id]
+                    winner_elo = int(winner_player.get("elo", 1000))
+                    loser_elo = int(loser_player.get("elo", 1000))
+                    expected = 1 / (1 + 10 ** ((loser_elo - winner_elo) / 400))
+                    elo_change = max(1, round(32 * (1 - expected)))
+                    tier_changes = {}
+                    loser_streak = 0
+
+                    for user_id in (winner_id, loser_id):
+                        player = player_docs[user_id]
+                        tiers = dict(player.get("tiers") or {})
+                        streaks = dict(player.get("duel_loss_streaks") or {})
+                        streak_key = mode_key(current_duel["gamemode"])
+                        old_tier = tiers.get(current_duel["gamemode"])
+                        old_tier = old_tier if old_tier in DUEL_TIER_ORDER else None
+                        if user_id == winner_id:
+                            new_tier = move_duel_tier(old_tier, 1)
+                            streaks[streak_key] = 0
+                        else:
+                            consecutive_losses = max(0, int(streaks.get(streak_key, 0))) + 1
+                            if consecutive_losses >= 2:
+                                new_tier = move_duel_tier(old_tier, -1)
+                                streaks[streak_key] = 0
+                            else:
+                                new_tier = old_tier
+                                streaks[streak_key] = consecutive_losses
+                            loser_streak = int(streaks[streak_key])
+
+                        if new_tier and new_tier != old_tier:
+                            tiers[current_duel["gamemode"]] = new_tier
+                            tier_changes[str(user_id)] = {"old": old_tier or "Unranked", "new": new_tier}
+                            self.history.insert_one({
+                                "guild_id": guild.id, "discord_id": user_id,
+                                "username": player.get("username", members[user_id].display_name),
+                                "gamemode": current_duel["gamemode"],
+                                "old_tier": old_tier or "Unranked", "new_tier": new_tier,
+                                "tester_id": actor.id, "source": "duel",
+                                "reason": f"Confirmed matchmaking duel {duel_id}",
+                                "created_at": now,
+                            }, session=active_session)
+
+                        is_winner = user_id == winner_id
+                        new_elo = max(100, winner_elo + elo_change) if is_winner else max(100, loser_elo - elo_change)
+                        self.players.update_one({
+                            "guild_id": guild.id, "discord_id": user_id,
+                        }, {"$set": {
+                            "guild_id": guild.id, "discord_id": user_id,
+                            "username": player.get("username", members[user_id].display_name),
+                            "username_lc": player.get("username_lc", members[user_id].display_name.casefold()),
+                            "tiers": tiers,
+                            "total_points": sum(POINTS.get(value, 0) for value in tiers.values()),
+                            "duel_loss_streaks": streaks,
+                            "elo": new_elo,
+                            "duels_played": int(player.get("duels_played", 0)) + 1,
+                            "wins": int(player.get("wins", 0)) + (1 if is_winner else 0),
+                            "losses": int(player.get("losses", 0)) + (0 if is_winner else 1),
+                            "updated_at": now,
+                        }}, upsert=True, session=active_session)
+
+                    winner_name = winner_player.get("username", members[winner_id].display_name)
+                    loser_name = loser_player.get("username", members[loser_id].display_name)
+                    self.activity.insert_one({
+                        "guild_id": guild.id, "kind": "duel_result",
+                        "winner_id": winner_id, "loser_id": loser_id,
+                        "winner_ign": winner_name, "loser_ign": loser_name,
+                        "gamemode": current_duel["gamemode"], "score": "confirmed",
+                        "elo_change": elo_change, "tier_changes": tier_changes,
+                        "duel_id": duel_id, "created_at": now,
+                    }, session=active_session)
+                    self.duels.update_one({
+                        "guild_id": guild.id, "duel_id": duel_id, "status": "resolving",
+                    }, {"$set": {
+                        "status": "completed", "winner_id": winner_id, "loser_id": loser_id,
+                        "completed_at": now, "elo_change": elo_change,
+                        "tier_changes": tier_changes, "resolved_by": actor.id,
+                    }}, session=active_session)
+                    outcome.update({
+                        "winner_id": winner_id, "loser_id": loser_id,
+                        "winner_name": winner_name, "loser_name": loser_name,
+                        "elo_change": elo_change, "loser_streak": loser_streak,
+                        "tier_changes": tier_changes,
+                    })
+                session.with_transaction(transaction_body)
+
+        try:
+            await self.db_call(apply_transaction)
+        except Exception:
+            await self.db_call(self.duels.update_one, {
+                "guild_id": guild.id, "duel_id": duel_id, "status": "resolving",
+            }, {"$set": {"status": "disputed", "settlement_error": "MongoDB transaction failed."}})
+            raise
+
+        for user_id in (winner_id, loser_id):
+            try:
+                player = await self.get_player(guild.id, user_id)
+                if player:
+                    await self.sync_best_role(members[user_id], player)
+            except discord.HTTPException:
+                log.exception("Could not sync tier role after duel %s for user %s", duel_id, user_id)
+
+        lines = [
+            f"🏆 <@{winner_id}> won the **{duel['gamemode']}** duel against <@{loser_id}>.",
+            f"**ELO:** +{outcome['elo_change']} / -{outcome['elo_change']}",
+        ]
+        for user_id, change in outcome["tier_changes"].items():
+            lines.append(f"<@{user_id}>: **{change['old']} → {change['new']}**")
+        if str(winner_id) not in outcome["tier_changes"]:
+            lines.append("Winner is already at the top tier, or their tier was unchanged.")
+        lines.append(f"Loser's consecutive loss count in {duel['gamemode']}: **{outcome['loser_streak']} / 2**.")
+        final_embed = discord.Embed(title="✅ Duel result confirmed", description="\n".join(lines), colour=0x57D69A)
+        config = await self.setting(guild.id)
+        for key in ("results_channel_id", "activity_channel_id"):
+            destination = guild.get_channel(int(config.get(key, 0)))
+            if destination:
+                try:
+                    await destination.send(embed=final_embed)
+                except discord.HTTPException:
+                    log.exception("Could not announce duel result in %s", key)
+        match_channel = guild.get_channel(int(duel.get("matchmaking_channel_id") or config.get("matchmaking_channel_id", 0)))
+        if isinstance(match_channel, discord.TextChannel) and duel.get("result_message_id"):
+            try:
+                result_message = await match_channel.fetch_message(int(duel["result_message_id"]))
+                await result_message.edit(embed=final_embed, view=None)
+            except (discord.NotFound, discord.Forbidden, discord.HTTPException):
+                pass
+        await self.send_duel_log(
+            guild,
+            f"Duel {duel_id} completed. Winner <@{winner_id}>, loser <@{loser_id}>, gamemode {duel['gamemode']}.",
+        )
+        return outcome
+
+    @app_commands.command(name="duel-disputes", description="Staff: list matchmaking duels with conflicting results.")
+    @app_commands.guild_only()
+    @app_commands.checks.has_permissions(manage_guild=True)
+    async def duel_disputes(self, interaction: discord.Interaction):
+        if not await self.require_db(interaction):
+            return
+        rows = await self.db_call(lambda: list(self.duels.find({
+            "guild_id": interaction.guild.id, "matchmaking": True, "status": "disputed",
+        }).sort("disputed_at", DESCENDING).limit(15)))
+        if not rows:
+            await interaction.response.send_message("There are no disputed matchmaking duels.", ephemeral=True)
+            return
+        lines = [
+            f"• {row['duel_id']} · **{row['gamemode']}** · <@{row['challenger_id']}> vs <@{row['opponent_id']}>"
+            for row in rows
+        ]
+        await interaction.response.send_message(
+            embed=discord.Embed(title="⚠️ Disputed matchmaking duels", description="\n".join(lines), colour=0xE67E22),
+            ephemeral=True,
+        )
+
+    @app_commands.command(name="duel-review", description="Staff: resolve a disputed duel and select the verified winner.")
+    @app_commands.guild_only()
+    @app_commands.checks.has_permissions(manage_guild=True)
+    async def duel_review(self, interaction: discord.Interaction, duel_id: str,
+                          winner: discord.Member, reason: str):
+        if not await self.require_db(interaction):
+            return
+        reason = reason.strip()
+        if len(reason) < 8:
+            await interaction.response.send_message("Provide a review reason of at least 8 characters.", ephemeral=True)
+            return
+        duel = await self.db_call(self.duels.find_one, {
+            "guild_id": interaction.guild.id, "duel_id": duel_id.strip(),
+            "matchmaking": True, "status": "disputed",
+        })
+        if not duel or winner.id not in (duel["challenger_id"], duel["opponent_id"]):
+            await interaction.response.send_message(
+                "That disputed duel was not found, or the selected winner is not a participant.",
+                ephemeral=True,
+            )
+            return
+        claimed = await self.db_call(self.duels.update_one, {
+            "guild_id": interaction.guild.id, "duel_id": duel["duel_id"], "status": "disputed",
+        }, {"$set": {
+            "status": "resolving", "resolving_at": datetime.now(timezone.utc),
+            "winner_id": winner.id, "staff_review_reason": reason[:300],
+            "staff_reviewer_id": interaction.user.id,
+        }})
+        if not claimed.modified_count:
+            await interaction.response.send_message("Another staff member is already reviewing this duel.", ephemeral=True)
+            return
+        await interaction.response.defer(ephemeral=True)
+        try:
+            outcome = await self.settle_matchmaking_duel(interaction.guild, duel["duel_id"], winner.id, interaction.user)
+        except Exception:
+            log.exception("Staff duel review failed for %s", duel["duel_id"])
+            await self.db_call(self.duels.update_one, {
+                "guild_id": interaction.guild.id, "duel_id": duel["duel_id"], "status": "resolving",
+            }, {"$set": {"status": "disputed", "settlement_error": "Staff settlement failed; retry review."}})
+            await interaction.followup.send("The result could not be applied. The duel remains disputed.", ephemeral=True)
+            return
+        await self.send_duel_log(
+            interaction.guild,
+            f"Staff review: duel {duel_id} resolved by {interaction.user.mention}. Winner: <@{outcome['winner_id']}>. Reason: {reason[:300]}",
+        )
+        await interaction.followup.send(
+            f"✅ Duel {duel_id} resolved. <@{outcome['winner_id']}> is the confirmed winner.",
+            ephemeral=True,
+        )
+
+    @app_commands.command(name="duel", description="Join matchmaking and find an opponent in a gamemode.")
+    @app_commands.guild_only()
+    async def duel(self, interaction: discord.Interaction):
+        if not await self.require_db(interaction):
+            return
+        await interaction.response.send_message(
+            embed=discord.Embed(
+                title="⚔️ Find a duel",
+                description="Choose the gamemode you want to play. You will then confirm before joining the queue.",
+                colour=0x55DDEB,
+            ),
+            view=DuelGamemodeSelectView(self),
+            ephemeral=True,
+        )
 
     @app_commands.command(name="duel-score", description="Submit a score; both players must report mirrored scores.")
     @app_commands.guild_only()
@@ -1215,6 +1786,12 @@ class IngloTiersCog(commands.Cog):
         duel = await self.db_call(self.duels.find_one, {"guild_id": interaction.guild.id, "duel_id": duel_id.strip()})
         if not duel or duel.get("status") != "active":
             await interaction.response.send_message("That duel is not active or could not be found.", ephemeral=True)
+            return
+        if duel.get("matchmaking"):
+            await interaction.response.send_message(
+                "This is a matchmaking duel. Both players must confirm the winner with the buttons on its match message.",
+                ephemeral=True,
+            )
             return
         if interaction.user.id not in (duel["challenger_id"], duel["opponent_id"]):
             await interaction.response.send_message("Only duel participants can submit scores.", ephemeral=True)
@@ -1609,6 +2186,31 @@ class IngloTiersCog(commands.Cog):
             "oldTier": h.get("old_tier"), "newTier": h.get("new_tier"),
             "createdAt": h.get("created_at").isoformat() if h.get("created_at") else None,
         } for h in history_rows]
+        player_id = int(player["discord_id"])
+        duel_rows = await self.db_call(lambda: list(self.duels.find({
+            "guild_id": gid, "status": "completed",
+            "$or": [{"challenger_id": player_id}, {"opponent_id": player_id}],
+        }).sort("completed_at", DESCENDING).limit(10)))
+        opponent_ids = {
+            int(row["opponent_id"] if int(row["challenger_id"]) == player_id else row["challenger_id"])
+            for row in duel_rows
+        }
+        opponents = await self.db_call(lambda: list(self.players.find({
+            "guild_id": gid, "discord_id": {"$in": list(opponent_ids)}
+        }, {"discord_id": 1, "username": 1}))) if opponent_ids else []
+        opponent_names = {int(row["discord_id"]): row.get("username", "Player") for row in opponents}
+        result["duelLossStreaks"] = player.get("duel_loss_streaks", {}) or {}
+        result["duelHistory"] = [{
+            "duelId": row.get("duel_id"),
+            "gamemode": row.get("gamemode"),
+            "opponent": opponent_names.get(
+                int(row["opponent_id"] if int(row["challenger_id"]) == player_id else row["challenger_id"]),
+                "Player",
+            ),
+            "result": "W" if int(row.get("winner_id", 0)) == player_id else "L",
+            "tierChange": (row.get("tier_changes") or {}).get(str(player_id)),
+            "createdAt": row.get("completed_at").isoformat() if row.get("completed_at") else None,
+        } for row in duel_rows]
         return web.json_response(result)
 
     async def web_mode_leaderboard(self, request):
