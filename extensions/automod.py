@@ -141,12 +141,12 @@ class AntiMacroChallengeModal(discord.ui.Modal):
     """A short arithmetic question makes a plain click macro insufficient."""
 
     def __init__(self, engine, key, view):
+        super().__init__(title="Quick human check", timeout=60)
         self.engine = engine
         self.key = key
         self.parent_view = view
         self.left = secrets.randbelow(8) + 2
         self.right = secrets.randbelow(8) + 2
-        super().__init__(title="Quick human check", timeout=60)
         self.answer = discord.ui.TextInput(
             label=f"What is {self.left} + {self.right}?",
             placeholder="Enter the number",
