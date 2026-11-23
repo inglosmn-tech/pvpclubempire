@@ -1443,6 +1443,7 @@ class IngloTiersCog(commands.Cog):
         })))
         ranking_docs.sort(key=lambda p: (
             -sum(POINTS.get(value, 0) for value in (p.get("tiers") or {}).values()),
+            TIERS.index(best_tier(p.get("tiers") or {})[0]) if best_tier(p.get("tiers") or {})[0] in TIERS else len(TIERS),
             -int(p.get("elo", 1000)),
             str(p.get("username", "")).casefold(),
         ))
