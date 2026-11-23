@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import math
 import os
 import random
 import re
@@ -118,9 +119,11 @@ def safe_player(player: dict) -> dict:
         "server": "mcpvp.club",
         "tiers": tiers,
         "totalPoints": total_points,
+        "elo": int(player.get("elo", 1000)),
         "wins": int(player.get("wins", 0)),
         "losses": int(player.get("losses", 0)),
         "duelsPlayed": int(player.get("duels_played", 0)),
+        "winRate": round((int(player.get("wins", 0)) / max(1, int(player.get("wins", 0)) + int(player.get("losses", 0)))) * 100, 1),
         "createdAt": player.get("created_at").isoformat() if player.get("created_at") else None,
     }
 
@@ -319,7 +322,7 @@ class IngloTiersCog(commands.Cog):
         display = username or member.display_name
         update = {"$set": {"updated_at": now}, "$setOnInsert": {
             "guild_id": guild_id, "discord_id": member.id, "username": display,
-            "username_lc": display.casefold(), "tiers": {}, "cooldowns": {}, "created_at": now}}
+            "username_lc": display.casefold(), "tiers": {}, "cooldowns": {}, "elo": 1000, "created_at": now}}
         if username:
             update["$set"].update({"username": username, "username_lc": username.casefold()})
         await self.db_call(self.players.update_one, {"guild_id": guild_id, "discord_id": member.id}, update, upsert=True)
@@ -574,7 +577,7 @@ class IngloTiersCog(commands.Cog):
         if desired and desired not in member.roles:
             await member.add_roles(desired, reason=f"IngloTiers best tier: {tier} in {mode}")
 
-    async def save_tier(self, guild, member, gamemode, new_tier, tester, source, username=None):
+    async def save_tier(self, guild, member, gamemode, new_tier, tester, source, username=None, reason=None):
         player = await self.get_or_create_player(guild.id, member, username)
         old_tier = (player.get("tiers") or {}).get(gamemode)
         tiers = dict(player.get("tiers") or {})
@@ -590,10 +593,12 @@ class IngloTiersCog(commands.Cog):
                       "username": display_name, "username_lc": display_name.casefold()}})
         await self.db_call(self.history.insert_one, {"guild_id": guild.id, "discord_id": member.id,
             "username": display_name, "gamemode": gamemode, "old_tier": old_tier or "Unranked",
-            "new_tier": new_tier, "tester_id": tester.id, "source": source, "created_at": now})
+            "new_tier": new_tier, "tester_id": tester.id, "source": source,
+            "reason": (reason or "")[:300], "created_at": now})
         await self.db_call(self.activity.insert_one, {"guild_id": guild.id, "kind": "tier_change",
             "discord_id": member.id, "username": display_name, "gamemode": gamemode,
-            "old_tier": old_tier or "Unranked", "new_tier": new_tier, "created_at": now})
+            "old_tier": old_tier or "Unranked", "new_tier": new_tier,
+            "source": source, "reason": (reason or "")[:300], "created_at": now})
         if source == "test":
             await self.db_call(self.tester_stats.update_one, {"guild_id": guild.id, "tester_id": tester.id},
                 {"$inc": {"tests_completed": 1}, "$set": {"tester_name": tester.display_name, "updated_at": now}}, upsert=True)
@@ -709,6 +714,11 @@ class IngloTiersCog(commands.Cog):
         e = discord.Embed(title=f"IngloTiers • {player.get('username', target.display_name)}",
                           description=f"Best tier: **{best or 'Unranked'}**" + (f" in **{mode}**" if mode else ""),
                           colour=COLOURS.get(best, 0x55DDEB))
+        wins = int(player.get("wins", 0))
+        losses = int(player.get("losses", 0))
+        played = wins + losses
+        e.add_field(name="Duel ELO", value=str(player.get("elo", 1000)), inline=True)
+        e.add_field(name="Duel record", value=f"{wins}W / {losses}L" + (f" ({wins / played * 100:.1f}%)" if played else ""), inline=True)
         e.set_thumbnail(url=target.display_avatar.url)
         for m in GAMEMODES:
             e.add_field(name=m, value=(player.get("tiers") or {}).get(m, "—"), inline=True)
@@ -723,7 +733,20 @@ class IngloTiersCog(commands.Cog):
             if value in TIERS:
                 rows.append({**safe_player(p), "display_tier": value, "best_mode": best_mode,
                              "sort_index": TIERS.index(value)})
-        rows.sort(key=lambda p: (p["sort_index"], p["username"].casefold()))
+        if mode:
+            rows.sort(key=lambda p: (
+                p["sort_index"],
+                -POINTS.get(p["display_tier"], 0),
+                -p["totalPoints"],
+                p["username"].casefold(),
+            ))
+        else:
+            rows.sort(key=lambda p: (
+                -p["totalPoints"],
+                p["sort_index"],
+                -int(p.get("elo", 1000)),
+                p["username"].casefold(),
+            ))
         return rows[:limit]
 
     @app_commands.command(name="tier-leaderboard", description="Show the overall or gamemode tier leaderboard.")
@@ -864,6 +887,151 @@ class IngloTiersCog(commands.Cog):
         lines = [f"**{i}.** {r.get('tester_name', 'Tester')} — **{r.get('tests_completed', 0)}** tests" for i, r in enumerate(rows, 1)]
         await interaction.response.send_message(embed=discord.Embed(title="IngloTiers tester leaderboard", description="\n".join(lines), colour=0x55DDEB))
 
+    @app_commands.command(name="tier-adjust", description="Staff: adjust a player's tier with an audit reason.")
+    @app_commands.guild_only()
+    @app_commands.checks.has_permissions(manage_guild=True)
+    @app_commands.choices(gamemode=MODE_OPTIONS, tier=TIER_OPTIONS)
+    async def tier_adjust(self, interaction, member: discord.Member,
+                          gamemode: app_commands.Choice[str], tier: app_commands.Choice[str],
+                          reason: str):
+        if not await self.require_db(interaction):
+            return
+        reason = reason.strip()
+        if len(reason) < 8:
+            await interaction.response.send_message("Please provide an audit reason of at least 8 characters.", ephemeral=True)
+            return
+        try:
+            await self.save_tier(
+                interaction.guild, member, gamemode.value, tier.value,
+                interaction.user, "staff", reason=reason,
+            )
+        except Exception:
+            log.exception("Staff tier adjustment failed")
+            await interaction.response.send_message("Tier adjustment failed. Check the Render logs.", ephemeral=True)
+            return
+        await interaction.response.send_message(
+            f"✅ Set {member.mention} to **{tier.value}** in **{gamemode.value}**. "
+            "The change and reason were recorded in tier history."
+        )
+
+    @app_commands.command(name="tier-recalculate", description="Repair a player's total points and shared tier role.")
+    @app_commands.guild_only()
+    @app_commands.checks.has_permissions(manage_guild=True)
+    async def tier_recalculate(self, interaction, member: discord.Member):
+        if not await self.require_db(interaction):
+            return
+        player = await self.get_player(interaction.guild.id, member.id)
+        if not player:
+            await interaction.response.send_message("This member has no IngloTiers profile yet.", ephemeral=True)
+            return
+        tiers = player.get("tiers", {}) or {}
+        invalid = [mode for mode, tier in tiers.items() if mode not in GAMEMODES or tier not in TIERS]
+        if invalid:
+            await interaction.response.send_message(
+                "This profile contains invalid mode/tier values: " + ", ".join(invalid),
+                ephemeral=True,
+            )
+            return
+        total = sum(POINTS.get(value, 0) for value in tiers.values())
+        await self.db_call(self.players.update_one, {
+            "guild_id": interaction.guild.id, "discord_id": member.id
+        }, {"$set": {"total_points": total, "elo": int(player.get("elo", 1000)),
+                     "updated_at": datetime.now(timezone.utc)}})
+        await self.sync_best_role(member, player)
+        best, mode = best_tier(tiers)
+        await interaction.response.send_message(
+            f"✅ Recalculated {member.mention}: **{total} points**, best tier "
+            f"**{best or 'Unranked'}**" + (f" in **{mode}**" if mode else "") + "."
+        )
+
+    @app_commands.command(name="tier-stats", description="Show the tier distribution for a gamemode.")
+    @app_commands.guild_only()
+    @app_commands.choices(gamemode=MODE_OPTIONS)
+    async def tier_stats(self, interaction, gamemode: app_commands.Choice[str]):
+        if not await self.require_db(interaction):
+            return
+        docs = await self.db_call(lambda: list(self.players.find({
+            "guild_id": interaction.guild.id, "tier_banned": {"$ne": True}
+        }, {"tiers": 1})))
+        counts = {tier: 0 for tier in TIERS}
+        for player in docs:
+            tier = (player.get("tiers") or {}).get(gamemode.value)
+            if tier in counts:
+                counts[tier] += 1
+        ranked = sum(counts.values())
+        lines = []
+        for tier in TIERS:
+            count = counts[tier]
+            bar = "█" * min(12, round(count / max(1, ranked) * 12))
+            lines.append(f"{tier:<3}  {count:>4}  {bar or '·'}")
+        embed = discord.Embed(
+            title=f"IngloTiers distribution • {gamemode.value}",
+            description="\n".join(lines),
+            colour=0x55DDEB,
+        )
+        embed.set_footer(text=f"{ranked} ranked players • {len(docs) - ranked} unranked")
+        await interaction.response.send_message(embed=embed)
+
+    @app_commands.command(name="tier-cooldowns", description="Check when you can request another test in each gamemode.")
+    @app_commands.guild_only()
+    async def tier_cooldowns(self, interaction):
+        if not await self.require_db(interaction):
+            return
+        player = await self.get_player(interaction.guild.id, interaction.user.id)
+        cooldowns = (player or {}).get("cooldowns", {})
+        now = time.time()
+        lines = []
+        for mode in GAMEMODES:
+            last = float(cooldowns.get(mode_key(mode), 0) or 0)
+            available_at = last + COOLDOWN
+            status = "Ready now" if not last or available_at <= now else f"Available <t:{int(available_at)}:R>"
+            lines.append(f"**{mode}:** {status}")
+        await interaction.response.send_message(
+            embed=discord.Embed(title="Your tier-test cooldowns", description="\n".join(lines), colour=0x55DDEB),
+            ephemeral=True,
+        )
+
+    @app_commands.command(name="elo", description="View a player's competitive duel rating.")
+    @app_commands.guild_only()
+    async def elo(self, interaction, member: discord.Member | None = None):
+        if not await self.require_db(interaction):
+            return
+        target = member or interaction.user
+        player = await self.get_or_create_player(interaction.guild.id, target)
+        wins = int(player.get("wins", 0))
+        losses = int(player.get("losses", 0))
+        played = wins + losses
+        embed = discord.Embed(
+            title=f"⚔️ {player.get('username', target.display_name)} • Duel rating",
+            description=f"**{int(player.get('elo', 1000))} ELO**",
+            colour=0x55DDEB,
+        )
+        embed.add_field(name="Record", value=f"{wins}W – {losses}L", inline=True)
+        embed.add_field(name="Win rate", value=f"{(wins / played * 100):.1f}%" if played else "No duels yet", inline=True)
+        embed.add_field(name="Duels played", value=str(player.get("duels_played", played)), inline=True)
+        await interaction.response.send_message(embed=embed)
+
+    @app_commands.command(name="elo-leaderboard", description="Show the top competitive duel ratings.")
+    @app_commands.guild_only()
+    async def elo_leaderboard(self, interaction):
+        if not await self.require_db(interaction):
+            return
+        rows = await self.db_call(lambda: list(self.players.find({
+            "guild_id": interaction.guild.id, "duels_played": {"$gt": 0}
+        }).sort([("elo", DESCENDING), ("wins", DESCENDING)]).limit(10)))
+        if not rows:
+            await interaction.response.send_message("No ranked duels have been completed yet.", ephemeral=True)
+            return
+        lines = [
+            f"**{index}.** {row.get('username', 'Player')} — **{int(row.get('elo', 1000))} ELO** "
+            f"({row.get('wins', 0)}W–{row.get('losses', 0)}L)"
+            for index, row in enumerate(rows, 1)
+        ]
+        await interaction.response.send_message(embed=discord.Embed(
+            title="⚔️ IngloTiers ELO leaderboard",
+            description="\n".join(lines), colour=0x55DDEB
+        ))
+
     @app_commands.command(name="tierban", description="Block a member from requesting IngloTiers tests.")
     @app_commands.guild_only()
     @app_commands.checks.has_permissions(manage_guild=True)
@@ -893,6 +1061,19 @@ class IngloTiersCog(commands.Cog):
             return
         if opponent.bot or opponent.id == interaction.user.id:
             await interaction.response.send_message("Choose another human player.", ephemeral=True)
+            return
+        active_duel = await self.db_call(self.duels.find_one, {
+            "guild_id": interaction.guild.id,
+            "status": {"$in": ["pending", "active", "disputed"]},
+            "$or": [
+                {"challenger_id": interaction.user.id}, {"opponent_id": interaction.user.id},
+                {"challenger_id": opponent.id}, {"opponent_id": opponent.id},
+            ],
+        })
+        if active_duel:
+            await interaction.response.send_message(
+                "One of these players already has an unfinished duel.", ephemeral=True
+            )
             return
         duel_id = uuid4().hex[:10]
         await self.db_call(self.duels.insert_one, {
@@ -927,28 +1108,66 @@ class IngloTiersCog(commands.Cog):
                 ephemeral=True,
             )
             return
-        reports = dict(duel.get("reports", {}))
-        reports[str(interaction.user.id)] = {"your": your_score, "opponent": opponent_score}
-        await self.db_call(self.duels.update_one, {"duel_id": duel_id}, {"$set": {"reports": reports}})
+        # Write only this participant's report, then read the combined state back.
+        # This avoids losing the other player's report during simultaneous submissions.
+        await self.db_call(self.duels.update_one, {
+            "guild_id": interaction.guild.id, "duel_id": duel_id, "status": "active"
+        }, {"$set": {
+            f"reports.{interaction.user.id}": {"your": your_score, "opponent": opponent_score}
+        }})
+        duel = await self.db_call(self.duels.find_one, {
+            "guild_id": interaction.guild.id, "duel_id": duel_id
+        })
+        reports = dict((duel or {}).get("reports", {}))
         first = reports.get(str(duel["challenger_id"]))
         second = reports.get(str(duel["opponent_id"]))
         if not first or not second:
-            await interaction.response.send_message("Score saved. Waiting for the other player to submit the mirrored score.", ephemeral=True)
+            await interaction.response.send_message(
+                "Score saved. Waiting for the other player to submit the mirrored score.", ephemeral=True
+            )
             return
         if first["your"] != second["opponent"] or first["opponent"] != second["your"]:
-            await self.db_call(self.duels.update_one, {"duel_id": duel_id}, {"$set": {"status": "disputed"}})
-            await interaction.response.send_message("The reports do not match. Duel disputed; no tiers were changed.", ephemeral=True)
+            await self.db_call(self.duels.update_one, {
+                "guild_id": interaction.guild.id, "duel_id": duel_id, "status": "active"
+            }, {"$set": {"status": "disputed"}})
+            await interaction.response.send_message(
+                "The reports do not match. Duel disputed; no tiers were changed.", ephemeral=True
+            )
             return
         if max(first["your"], first["opponent"]) != needed or first["your"] + first["opponent"] > duel["best_of"]:
-            await self.db_call(self.duels.update_one, {"duel_id": duel_id}, {"$set": {"status": "disputed"}})
-            await interaction.response.send_message("The score does not finish this best-of format. Duel disputed; no tiers changed.", ephemeral=True)
+            await self.db_call(self.duels.update_one, {
+                "guild_id": interaction.guild.id, "duel_id": duel_id, "status": "active"
+            }, {"$set": {"status": "disputed"}})
+            await interaction.response.send_message(
+                "The score does not finish this best-of format. Duel disputed; no tiers changed.", ephemeral=True
+            )
+            return
+
+        # Exactly one interaction can claim settlement for this duel.
+        claimed = await self.db_call(self.duels.update_one, {
+            "guild_id": interaction.guild.id, "duel_id": duel_id, "status": "active"
+        }, {"$set": {"status": "resolving", "resolving_at": datetime.now(timezone.utc)}})
+        if not claimed.modified_count:
+            await interaction.response.send_message(
+                "This duel is already being finalised. No duplicate rating change was applied.", ephemeral=True
+            )
             return
         winner_id = duel["challenger_id"] if first["your"] > first["opponent"] else duel["opponent_id"]
         loser_id = duel["opponent_id"] if winner_id == duel["challenger_id"] else duel["challenger_id"]
         winner = interaction.guild.get_member(winner_id) or await interaction.guild.fetch_member(winner_id)
         loser = interaction.guild.get_member(loser_id) or await interaction.guild.fetch_member(loser_id)
-        for member, direction in ((winner, -1), (loser, 1)):
-            player = await self.get_or_create_player(interaction.guild.id, member)
+        winner_player = await self.get_or_create_player(interaction.guild.id, winner)
+        loser_player = await self.get_or_create_player(interaction.guild.id, loser)
+        winner_elo = int(winner_player.get("elo", 1000))
+        loser_elo = int(loser_player.get("elo", 1000))
+        expected_winner = 1 / (1 + 10 ** ((loser_elo - winner_elo) / 400))
+        elo_change = max(1, round(32 * (1 - expected_winner)))
+        now = datetime.now(timezone.utc)
+
+        for member, player, direction in (
+            (winner, winner_player, -1),
+            (loser, loser_player, 1),
+        ):
             current = (player.get("tiers") or {}).get(duel["gamemode"])
             changed_tier = move_tier(current, direction)
             if changed_tier:
@@ -956,17 +1175,32 @@ class IngloTiersCog(commands.Cog):
                     interaction.guild, member, duel["gamemode"], changed_tier,
                     interaction.user, "duel", player.get("username"),
                 )
-            update = {"duels_played": int(player.get("duels_played", 0)) + 1}
-            if member.id == winner_id:
-                update["wins"] = int(player.get("wins", 0)) + 1
-            else:
-                update["losses"] = int(player.get("losses", 0)) + 1
+            is_winner = member.id == winner_id
+            rating = (winner_elo + elo_change) if is_winner else (loser_elo - elo_change)
+            update = {
+                "elo": max(100, rating),
+                "duels_played": int(player.get("duels_played", 0)) + 1,
+                "wins": int(player.get("wins", 0)) + (1 if is_winner else 0),
+                "losses": int(player.get("losses", 0)) + (0 if is_winner else 1),
+                "updated_at": now,
+            }
             await self.db_call(self.players.update_one, {
                 "guild_id": interaction.guild.id, "discord_id": member.id
             }, {"$set": update})
+        await self.db_call(self.activity.insert_one, {
+            "guild_id": interaction.guild.id, "kind": "duel_result",
+            "winner_id": winner_id, "loser_id": loser_id,
+            "winner_ign": winner_player.get("username"), "loser_ign": loser_player.get("username"),
+            "gamemode": duel["gamemode"], "score": f"{first['your']}-{first['opponent']}",
+            "elo_change": elo_change, "created_at": now,
+        })
         await self.db_call(self.duels.update_one, {"duel_id": duel_id}, {"$set": {
             "status": "completed", "winner_id": winner_id, "completed_at": datetime.now(timezone.utc)}})
-        await interaction.response.send_message(f"{winner.mention} won! They move one tier up and {loser.mention} one tier down in {duel['gamemode']}.")
+        await interaction.response.send_message(
+            f"{winner.mention} won **{first['your']}-{first['opponent']}** in {duel['gamemode']}! "
+            f"They gained **{elo_change} ELO** and {loser.mention} lost **{elo_change} ELO**. "
+            "Their gamemode tiers and shared tier roles were recalculated."
+        )
 
     @app_commands.command(name="duel-cancel", description="Cancel one of your pending or active duels.")
     @app_commands.guild_only()
@@ -1232,9 +1466,20 @@ class IngloTiersCog(commands.Cog):
         })
         if not player:
             return web.json_response({"error": "Player not found"}, status=404)
-        rank = await self.db_call(self.players.count_documents, {
-            "guild_id": gid, "banned": {"$ne": True}, "total_points": {"$gt": player.get("total_points", 0)}
-        }) + 1
+        ranking_docs = await self.db_call(lambda: list(self.players.find({
+            "guild_id": gid, "banned": {"$ne": True}
+        })))
+        ranking_docs.sort(key=lambda p: (
+            -sum(POINTS.get(value, 0) for value in (p.get("tiers") or {}).values()),
+            TIERS.index(best_tier(p.get("tiers") or {})[0]) if best_tier(p.get("tiers") or {})[0] in TIERS else len(TIERS),
+            -int(p.get("elo", 1000)),
+            str(p.get("username", "")).casefold(),
+        ))
+        rank = next(
+            (index for index, entry in enumerate(ranking_docs, 1)
+             if int(entry.get("discord_id", 0)) == int(player["discord_id"])),
+            None,
+        )
         history_rows = await self.db_call(lambda: list(self.history.find({
             "guild_id": gid, "discord_id": player["discord_id"]
         }).sort("created_at", DESCENDING).limit(20)))
@@ -1278,10 +1523,18 @@ class IngloTiersCog(commands.Cog):
         docs = await self.db_call(lambda: list(self.tester_stats.find({
             "guild_id": gid
         }).sort("tests_completed", DESCENDING).limit(50)))
-        return web.json_response([{
-            "testerId": str(p["tester_id"]), "testsCompleted": p.get("tests_completed", 0),
-            "byMode": p.get("by_mode", {}), "lastTestAt": p.get("updated_at"),
-        } for p in docs])
+        guild = self.bot.get_guild(int(gid))
+        response = []
+        for p in docs:
+            member = guild.get_member(int(p["tester_id"])) if guild else None
+            response.append({
+                "testerId": str(p["tester_id"]),
+                "name": member.display_name if member else p.get("tester_name", "Tester"),
+                "testsCompleted": p.get("tests_completed", 0),
+                "byMode": p.get("by_mode", {}),
+                "lastTestAt": p.get("updated_at").isoformat() if p.get("updated_at") else None,
+            })
+        return web.json_response(response)
 
     async def web_activity(self, request):
         if self.db is None:
@@ -1290,12 +1543,20 @@ class IngloTiersCog(commands.Cog):
         if not gid:
             return web.json_response([])
         docs = await self.db_call(lambda: list(self.activity.find({
-            "guild_id": gid, "kind": "tier_change"
+            "guild_id": gid, "kind": {"$in": ["tier_change", "duel_result"]}
         }).sort("created_at", DESCENDING).limit(30)))
         return web.json_response([{
-            "type": "tier-change", "playerIgn": p.get("username"), "playerId": str(p.get("discord_id", "")),
-            "mode": p.get("gamemode"), "oldTier": p.get("old_tier"),
-            "newTier": p.get("new_tier"), "details": p.get("source"),
+            **({
+                "type": "duel-result", "playerIgn": p.get("winner_ign"),
+                "mode": p.get("gamemode"), "oldTier": "Duel",
+                "newTier": f"Won {p.get('score', '')}",
+                "details": f"+{p.get('elo_change', 0)} ELO",
+            } if p.get("kind") == "duel_result" else {
+                "type": "tier-change", "playerIgn": p.get("username"),
+                "playerId": str(p.get("discord_id", "")), "mode": p.get("gamemode"),
+                "oldTier": p.get("old_tier"), "newTier": p.get("new_tier"),
+                "details": p.get("source"),
+            }),
             "createdAt": p.get("created_at").isoformat() if p.get("created_at") else None,
         } for p in docs])
 
