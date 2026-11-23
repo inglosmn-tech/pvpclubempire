@@ -100,8 +100,10 @@ def best_tier(tiers: dict) -> tuple[str | None, str | None]:
     return tier, mode
 
 
-def move_tier(tier: str | None, direction: int) -> str:
-    index = TIERS.index(tier) if tier in TIERS else len(TIERS) - 1
+def move_tier(tier: str | None, direction: int) -> str | None:
+    if tier not in TIERS:
+        return "LT5" if direction < 0 else None
+    index = TIERS.index(tier)
     return TIERS[max(0, min(len(TIERS) - 1, index + direction))]
 
 
@@ -373,7 +375,28 @@ class IngloTiersCog(commands.Cog):
             request = await self.find_channel(guild, "request-test", public_category, True)
             results = await self.find_channel(guild, "results", public_category)
             activity = await self.find_channel(guild, "tier-activity", public_category)
-            logs = await self.find_channel(guild, "ticket-logs", public_category)
+            logs_category = await self.find_category(guild, "INGLOTIERS LOGS")
+            log_overwrites = {
+                guild.default_role: discord.PermissionOverwrite(view_channel=False),
+            }
+            if guild.me:
+                log_overwrites[guild.me] = discord.PermissionOverwrite(
+                    view_channel=True, send_messages=True, read_message_history=True
+                )
+            for role in guild.roles:
+                if role.permissions.manage_guild or role.permissions.manage_messages:
+                    log_overwrites[role] = discord.PermissionOverwrite(
+                        view_channel=True, send_messages=True, read_message_history=True
+                    )
+            logs = discord.utils.get(guild.text_channels, name="ticket-logs")
+            if logs:
+                await logs.edit(category=logs_category, overwrites=log_overwrites,
+                                reason="IngloTiers private ticket logs")
+            else:
+                logs = await guild.create_text_channel(
+                    "ticket-logs", category=logs_category, overwrites=log_overwrites,
+                    reason="IngloTiers private ticket logs"
+                )
             matchmaking = await self.find_channel(guild, "matchmaking", public_category)
             await self.db_call(self.settings.update_one, {"guild_id": guild.id}, {"$set": {
                 "guild_id": guild.id, "tier_roles": tier_roles, "tester_roles": tester_roles,
@@ -896,8 +919,13 @@ class IngloTiersCog(commands.Cog):
         if interaction.user.id not in (duel["challenger_id"], duel["opponent_id"]):
             await interaction.response.send_message("Only duel participants can submit scores.", ephemeral=True)
             return
-        if your_score == opponent_score:
-            await interaction.response.send_message("A duel cannot end in a tie.", ephemeral=True)
+        needed = duel["best_of"] // 2 + 1
+        if (your_score == opponent_score or max(your_score, opponent_score) != needed
+                or your_score + opponent_score > duel["best_of"]):
+            await interaction.response.send_message(
+                f"Invalid best-of-{duel['best_of']} score. The winner must reach {needed} rounds.",
+                ephemeral=True,
+            )
             return
         reports = dict(duel.get("reports", {}))
         reports[str(interaction.user.id)] = {"your": your_score, "opponent": opponent_score}
@@ -911,8 +939,7 @@ class IngloTiersCog(commands.Cog):
             await self.db_call(self.duels.update_one, {"duel_id": duel_id}, {"$set": {"status": "disputed"}})
             await interaction.response.send_message("The reports do not match. Duel disputed; no tiers were changed.", ephemeral=True)
             return
-        needed = duel["best_of"] // 2 + 1
-        if max(first["your"], first["opponent"]) < needed:
+        if max(first["your"], first["opponent"]) != needed or first["your"] + first["opponent"] > duel["best_of"]:
             await self.db_call(self.duels.update_one, {"duel_id": duel_id}, {"$set": {"status": "disputed"}})
             await interaction.response.send_message("The score does not finish this best-of format. Duel disputed; no tiers changed.", ephemeral=True)
             return
@@ -922,8 +949,21 @@ class IngloTiersCog(commands.Cog):
         loser = interaction.guild.get_member(loser_id) or await interaction.guild.fetch_member(loser_id)
         for member, direction in ((winner, -1), (loser, 1)):
             player = await self.get_or_create_player(interaction.guild.id, member)
-            new_tier = move_tier((player.get("tiers") or {}).get(duel["gamemode"]), direction)
-            await self.save_tier(interaction.guild, member, duel["gamemode"], new_tier, interaction.user, "duel", player.get("username"))
+            current = (player.get("tiers") or {}).get(duel["gamemode"])
+            changed_tier = move_tier(current, direction)
+            if changed_tier:
+                await self.save_tier(
+                    interaction.guild, member, duel["gamemode"], changed_tier,
+                    interaction.user, "duel", player.get("username"),
+                )
+            update = {"duels_played": int(player.get("duels_played", 0)) + 1}
+            if member.id == winner_id:
+                update["wins"] = int(player.get("wins", 0)) + 1
+            else:
+                update["losses"] = int(player.get("losses", 0)) + 1
+            await self.db_call(self.players.update_one, {
+                "guild_id": interaction.guild.id, "discord_id": member.id
+            }, {"$set": update})
         await self.db_call(self.duels.update_one, {"duel_id": duel_id}, {"$set": {
             "status": "completed", "winner_id": winner_id, "completed_at": datetime.now(timezone.utc)}})
         await interaction.response.send_message(f"{winner.mention} won! They move one tier up and {loser.mention} one tier down in {duel['gamemode']}.")
