@@ -1479,10 +1479,18 @@ class IngloTiersCog(commands.Cog):
         docs = await self.db_call(lambda: list(self.tester_stats.find({
             "guild_id": gid
         }).sort("tests_completed", DESCENDING).limit(50)))
-        return web.json_response([{
-            "testerId": str(p["tester_id"]), "testsCompleted": p.get("tests_completed", 0),
-            "byMode": p.get("by_mode", {}), "lastTestAt": p.get("updated_at"),
-        } for p in docs])
+        guild = self.bot.get_guild(int(gid))
+        response = []
+        for p in docs:
+            member = guild.get_member(int(p["tester_id"])) if guild else None
+            response.append({
+                "testerId": str(p["tester_id"]),
+                "name": member.display_name if member else p.get("tester_name", "Tester"),
+                "testsCompleted": p.get("tests_completed", 0),
+                "byMode": p.get("by_mode", {}),
+                "lastTestAt": p.get("updated_at").isoformat() if p.get("updated_at") else None,
+            })
+        return web.json_response(response)
 
     async def web_activity(self, request):
         if self.db is None:
