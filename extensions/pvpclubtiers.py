@@ -226,7 +226,15 @@ class TesterApplicationModeSelect(discord.ui.Select):
         )
 
     async def callback(self, interaction: discord.Interaction):
-        await interaction.response.send_modal(TesterApplicationModal(self.cog, self.values[0]))
+        try:
+            await interaction.response.send_modal(TesterApplicationModal(self.cog, self.values[0]))
+        except Exception:
+            log.exception("Could not open tester application modal for user %s", interaction.user.id)
+            if not interaction.response.is_done():
+                await interaction.response.send_message(
+                    "I couldn't open the application form. Please click Apply again.",
+                    ephemeral=True,
+                )
 
 
 class TesterApplicationModeSelectView(discord.ui.View):
@@ -258,10 +266,22 @@ class TesterApplicationModal(discord.ui.Modal):
         self.add_item(self.reason)
 
     async def on_submit(self, interaction: discord.Interaction):
-        await self.cog.submit_tester_application(
-            interaction, self.gamemode, str(self.minecraft_username),
-            str(self.experience), str(self.reason),
-        )
+        # Acknowledge the modal before any database checks or other work.
+        await interaction.response.defer(ephemeral=True, thinking=True)
+        try:
+            await self.cog.submit_tester_application(
+                interaction, self.gamemode, str(self.minecraft_username),
+                str(self.experience), str(self.reason), interaction_deferred=True,
+            )
+        except Exception:
+            log.exception("Unhandled tester application modal submission error for user %s", interaction.user.id)
+            try:
+                await interaction.followup.send(
+                    "I couldn't submit your application. Please try again or contact an administrator.",
+                    ephemeral=True,
+                )
+            except discord.HTTPException:
+                log.exception("Could not send tester application failure message to user %s", interaction.user.id)
 
 
 class TesterApplicationReviewView(discord.ui.View):
@@ -818,23 +838,33 @@ class PvPClubTiersCog(commands.Cog):
         minecraft_username: str,
         experience: str,
         reason: str,
+        *,
+        interaction_deferred: bool = False,
     ):
-        if not await self.require_db(interaction):
-            return
+        # The modal normally defers before calling this method. Keep this safe
+        # for any other caller that may use the handler directly in the future.
+        if not interaction_deferred and not interaction.response.is_done():
+            await interaction.response.defer(ephemeral=True, thinking=True)
+
         guild = interaction.guild
         if guild is None or not isinstance(interaction.user, discord.Member):
-            await interaction.response.send_message("Applications can only be submitted inside the server.", ephemeral=True)
+            await interaction.followup.send("Applications can only be submitted inside the server.", ephemeral=True)
+            return
+        if self.db is None:
+            await interaction.followup.send(
+                "PvPClubTiers database is not connected. Please contact a server administrator.",
+                ephemeral=True,
+            )
             return
         if gamemode not in GAMEMODES:
-            await interaction.response.send_message("That gamemode is not supported.", ephemeral=True)
+            await interaction.followup.send("That gamemode is not supported.", ephemeral=True)
             return
         try:
             minecraft_username = clean_username(minecraft_username)
         except ValueError as exc:
-            await interaction.response.send_message(str(exc), ephemeral=True)
+            await interaction.followup.send(str(exc), ephemeral=True)
             return
 
-        await interaction.response.defer(ephemeral=True, thinking=True)
         async with self.tester_application_lock:
             try:
                 config = await self.setting(guild.id)
