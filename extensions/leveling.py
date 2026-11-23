@@ -5,7 +5,7 @@ import asyncio
 import logging
 import random
 import time
-from datetime import timedelta
+from datetime import datetime, timedelta, timezone
 
 import discord
 from discord import app_commands
@@ -142,14 +142,49 @@ class MeowResetView(discord.ui.View):
         )
 
 
+
+
+class DeadchatRewardView(discord.ui.View):
+    """Persistent one-claim reward button for an active deadchat event."""
+    def __init__(self, cog: "LevelingCog"):
+        super().__init__(timeout=None)
+        self.cog = cog
+
+    @discord.ui.button(label="Claim 5 XP", emoji="🐾", style=discord.ButtonStyle.success,
+                       custom_id="deadchat:claim-xp")
+    async def claim_xp(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if not interaction.guild or not isinstance(interaction.user, discord.Member):
+            await interaction.response.send_message("This reward is only available in the server.", ephemeral=True)
+            return
+        config = self.cog._config(interaction.guild.id)
+        event = config.get("deadchat_event") or {}
+        now = time.time()
+        if int(event.get("message_id", 0)) != interaction.message.id or float(event.get("active_until", 0)) <= now:
+            await interaction.response.send_message("This deadchat XP event has ended.", ephemeral=True)
+            return
+        claimed = {int(x) for x in event.get("claimed", []) if str(x).isdigit()}
+        if interaction.user.id in claimed:
+            await interaction.response.send_message("You already claimed your 5 XP for this event!", ephemeral=True)
+            return
+        claimed.add(interaction.user.id)
+        event["claimed"] = sorted(claimed)
+        await self.cog.bot.store.save()
+        await self.cog.award_xp(interaction.user, 5, voice=False)
+        await interaction.response.send_message("🐾 You claimed **5 XP**! Now keep the chat alive for 3× XP.", ephemeral=True)
+
+
 class LevelingCog(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
         self.text_cooldowns: dict[tuple[int, int], float] = {}
+        self.deadchat_view = DeadchatRewardView(self)
+        self.bot.add_view(self.deadchat_view)
         self.voice_xp_loop.start()
+        self.deadchat_watcher.start()
 
     def cog_unload(self):
         self.voice_xp_loop.cancel()
+        self.deadchat_watcher.cancel()
 
     def _config(self, guild_id: int) -> dict:
         return self.bot.store.data.setdefault("level_config", {}).setdefault(str(guild_id), {})
@@ -178,6 +213,9 @@ class LevelingCog(commands.Cog):
         ignored_roles = {int(x) for x in config.get("ignored_roles", []) if str(x).isdigit()}
         if any(role.id in ignored_roles for role in message.author.roles):
             return
+        deadchat = config.get("deadchat") or {}
+        if int(deadchat.get("channel_id", 0) or 0) == message.channel.id:
+            deadchat["last_activity_at"] = time.time()
         key = (message.guild.id, message.author.id)
         now = time.monotonic()
         if now - self.text_cooldowns.get(key, 0.0) < 60:
@@ -189,6 +227,9 @@ class LevelingCog(commands.Cog):
             cutoff = now - 60.0
             self.text_cooldowns = {k: stamp for k, stamp in self.text_cooldowns.items() if stamp >= cutoff}
         multiplier = self._xp_multiplier(message.author, config)
+        event = config.get("deadchat_event") or {}
+        if float(event.get("active_until", 0)) > time.time():
+            multiplier *= 3
         amount = max(1, int(random.randint(15, 25) * multiplier))
         await self.award_xp(message.author, amount, voice=False)
 
@@ -354,6 +395,144 @@ class LevelingCog(commands.Cog):
             lines.append(f"{marker} <@{row['user_id']}> — **Level {row['level']}** · {row['total_xp']:,} XP")
         e = cat_embed("🏆 Empire Catnip Leaderboard", "\n".join(lines) or "No XP yet. Be the first kitten! 🐾")
         await interaction.response.send_message(embed=e, view=LeaderboardView(self, interaction.guild_id))
+
+
+    @commands.command(name="deadchat")
+    @commands.guild_only()
+    @commands.has_guild_permissions(manage_guild=True)
+    async def deadchat(self, ctx: commands.Context, role: discord.Role):
+        """Configure daily deadchat pings in the channel where this command is used."""
+        if role.is_default() or role.managed:
+            await ctx.reply("Choose a normal, mentionable server role.")
+            return
+        if not isinstance(ctx.channel, discord.TextChannel):
+            await ctx.reply("Use this command in a text channel.")
+            return
+        config = self._config(ctx.guild.id)
+        config["deadchat"] = {
+            "channel_id": ctx.channel.id,
+            "role_id": role.id,
+            "timezone": "Europe/Amsterdam",
+            "enabled": True,
+            "last_activity_at": time.time(),
+            "schedule_date": None,
+            "schedule_hours": [],
+            "sent_today": [],
+        }
+        await self.bot.store.save()
+        await ctx.reply(
+            f"✅ Deadchat is set up in {ctx.channel.mention} for {role.mention}. "
+            "I'll check between 15:00 and 23:00 (Amsterdam time), up to twice per day, "
+            "and only ping after at least 1 hour without a message. Each ping starts 30 minutes of 3× message XP."
+        )
+
+    @commands.command(name="deadchatstop")
+    @commands.guild_only()
+    @commands.has_guild_permissions(manage_guild=True)
+    async def deadchatstop(self, ctx: commands.Context):
+        config = self._config(ctx.guild.id)
+        deadchat = config.get("deadchat") or {}
+        deadchat["enabled"] = False
+        await self.bot.store.save()
+        await ctx.reply("🛑 Deadchat pings are disabled.")
+
+    def _deadchat_schedule(self, deadchat: dict, today):
+        """Choose one or two daily target times; persisted so restarts don't reroll them."""
+        if deadchat.get("schedule_date") == today.isoformat():
+            return
+        count = random.choice((1, 2))
+        hours = sorted(random.sample(range(15, 23), count))
+        if len(hours) == 2 and hours[1] - hours[0] < 2:
+            hours[1] = min(22, hours[0] + 2)
+        deadchat["schedule_date"] = today.isoformat()
+        deadchat["schedule_hours"] = sorted(set(hours))
+        deadchat["sent_today"] = []
+
+    @tasks.loop(seconds=60)
+    async def deadchat_watcher(self):
+        """Check the configured channel for one-hour quiet periods during 15:00–23:00."""
+        from zoneinfo import ZoneInfo
+        zone = ZoneInfo("Europe/Amsterdam")
+        now_dt = datetime.now(zone)
+        now_ts = time.time()
+        for guild in list(self.bot.guilds):
+            config = self._config(guild.id)
+            deadchat = config.get("deadchat") or {}
+            if not deadchat.get("enabled"):
+                continue
+            self._deadchat_schedule(deadchat, now_dt.date())
+            channel = guild.get_channel(int(deadchat.get("channel_id", 0) or 0))
+            role = guild.get_role(int(deadchat.get("role_id", 0) or 0))
+            if not isinstance(channel, discord.TextChannel) or role is None:
+                continue
+            # Expire the previous event and disable its button.
+            event = config.get("deadchat_event") or {}
+            if event and float(event.get("active_until", 0)) <= now_ts and not event.get("expired"):
+                event["expired"] = True
+                try:
+                    message = await channel.fetch_message(int(event.get("message_id", 0)))
+                    await message.edit(view=None)
+                except (discord.HTTPException, discord.NotFound, ValueError):
+                    pass
+                await self.bot.store.save()
+
+            if not (15 <= now_dt.hour <= 22):
+                continue
+            sent = {int(x) for x in deadchat.get("sent_today", []) if str(x).isdigit()}
+            due_hours = [int(x) for x in deadchat.get("schedule_hours", []) if int(x) not in sent and now_dt.hour >= int(x)]
+            if not due_hours or now_dt.hour >= 23:
+                continue
+            # Read Discord's latest message directly so activity during a bot restart
+            # is never mistaken for an hour of silence.
+            last_activity = 0.0
+            try:
+                async for latest_message in channel.history(limit=1):
+                    last_activity = latest_message.created_at.timestamp()
+                    break
+            except discord.HTTPException:
+                continue
+            if last_activity <= 0 or now_ts - last_activity < 3600:
+                continue
+            previous_event = config.get("deadchat_event") or {}
+            if float(previous_event.get("started_at", 0) or 0) and now_ts - float(previous_event.get("started_at", 0)) < 2 * 3600:
+                continue
+            # Record the daily slot before sending to prevent duplicate pings on retry/restart.
+            slot = due_hours[0]
+            sent.add(slot)
+            deadchat["sent_today"] = sorted(sent)
+            await self.bot.store.save()
+            active_until = now_ts + 30 * 60
+            event_id = f"{now_dt.date().isoformat()}-{slot}-{int(now_ts)}"
+            embed = cat_embed(
+                "💀 DEAD CHAT DETECTED",
+                f"{role.mention} the chat has been silent for over an hour!\n\n"
+                "**3× XP is now active for 30 minutes.** Start talking, keep the chat alive, "
+                "and press the button below to claim **5 bonus XP** once.",
+                0xFF9CEE,
+            )
+            embed.set_footer(text="PVPClub Empire • Deadchat event")
+            try:
+                sent_message = await channel.send(
+                    content=role.mention, embed=embed, view=self.deadchat_view,
+                    allowed_mentions=discord.AllowedMentions(roles=[role]),
+                )
+            except discord.HTTPException:
+                log.exception("Could not send deadchat ping in guild %s", guild.id)
+                continue
+            config["deadchat_event"] = {
+                "event_id": event_id,
+                "channel_id": channel.id,
+                "message_id": sent_message.id,
+                "started_at": now_ts,
+                "active_until": active_until,
+                "claimed": [],
+                "expired": False,
+            }
+            await self.bot.store.save()
+
+    @deadchat_watcher.before_loop
+    async def before_deadchat_watcher(self):
+        await self.bot.wait_until_ready()
 
     @tasks.loop(seconds=60)
     async def voice_xp_loop(self):
