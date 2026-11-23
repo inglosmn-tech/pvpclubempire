@@ -1105,7 +1105,12 @@ class IngloTiersCog(commands.Cog):
                 "created_at": datetime.now(timezone.utc)})
             await message.reply("❌ Not quite — try again!")
         except DuplicateKeyError:
-            pass
+            # Keep incorrect-answer feedback useful without letting a member flood the channel.
+            key = (message.guild.id, message.author.id)
+            now = time.monotonic()
+            if now - self.last_wrong_feedback.get(key, 0.0) >= 4:
+                self.last_wrong_feedback[key] = now
+                await message.reply("❌ Not quite — try again!")
 
     @tasks.loop(seconds=30)
     async def trivia_watcher(self):
