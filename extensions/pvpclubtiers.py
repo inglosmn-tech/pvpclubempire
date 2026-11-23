@@ -623,9 +623,24 @@ class PvPClubTiersCog(commands.Cog):
         )
         return await self.get_player(guild_id, member.id)
 
-    def staff_or_tester(self, member: discord.Member, gamemode: str) -> bool:
-        return (member.guild_permissions.manage_guild or member.guild_permissions.administrator
-                or any(role.name == f"{gamemode} Tester" for role in member.roles))
+    async def staff_or_tester(self, member: discord.Member, gamemode: str) -> bool:
+        if member.guild_permissions.manage_guild or member.guild_permissions.administrator:
+            return True
+
+        # Prefer the configured role ID so testers still work if a role is
+        # renamed, has different capitalisation, or contains extra formatting.
+        config = await self.setting(member.guild.id)
+        role_id = (config.get("tester_roles") or {}).get(gamemode)
+        if role_id:
+            try:
+                configured_role_id = int(role_id)
+            except (TypeError, ValueError):
+                configured_role_id = None
+            if configured_role_id and any(role.id == configured_role_id for role in member.roles):
+                return True
+
+        expected_name = f"{gamemode} Tester".casefold()
+        return any(role.name.casefold() == expected_name for role in member.roles)
 
     async def find_category(self, guild: discord.Guild, name: str):
         category = discord.utils.get(guild.categories, name=name)
@@ -683,8 +698,11 @@ class PvPClubTiersCog(commands.Cog):
             results = await self.find_channel(guild, "results", public_category)
             activity = await self.find_channel(guild, "tier-activity", public_category)
             logs_category = await self.find_category(guild, "PVPCLUBTIERS LOGS")
+            # Ticket logs are visible to everyone, but read-only for regular members.
             log_overwrites = {
-                guild.default_role: discord.PermissionOverwrite(view_channel=False),
+                guild.default_role: discord.PermissionOverwrite(
+                    view_channel=True, send_messages=False, read_message_history=True,
+                ),
             }
             if guild.me:
                 log_overwrites[guild.me] = discord.PermissionOverwrite(
@@ -693,7 +711,8 @@ class PvPClubTiersCog(commands.Cog):
             for role in guild.roles:
                 if role.permissions.manage_guild or role.permissions.manage_messages:
                     log_overwrites[role] = discord.PermissionOverwrite(
-                        view_channel=True, send_messages=True, read_message_history=True
+                        view_channel=True, send_messages=True, read_message_history=True,
+                        use_application_commands=True,
                     )
             logs = discord.utils.get(guild.text_channels, name="ticket-logs")
             if logs:
@@ -1176,17 +1195,41 @@ class PvPClubTiersCog(commands.Cog):
             return
         tester_role_id = config.get("tester_roles", {}).get(gamemode)
         tester_role = guild.get_role(int(tester_role_id)) if tester_role_id else None
+        # This server has requested public visibility for every channel.
+        # Everyone can read test tickets, while only the applicant, matching
+        # tester roles and staff can send messages. This also explicitly
+        # enables slash commands inside these channels.
         overwrites = {
-            guild.default_role: discord.PermissionOverwrite(view_channel=False),
-            interaction.user: discord.PermissionOverwrite(view_channel=True, send_messages=True, read_message_history=True, attach_files=True),
+            guild.default_role: discord.PermissionOverwrite(
+                view_channel=True,
+                send_messages=False,
+                read_message_history=True,
+                use_application_commands=True,
+            ),
+            interaction.user: discord.PermissionOverwrite(
+                view_channel=True,
+                send_messages=True,
+                read_message_history=True,
+                attach_files=True,
+                use_application_commands=True,
+            ),
         }
         if guild.me:
-            overwrites[guild.me] = discord.PermissionOverwrite(view_channel=True, send_messages=True, manage_channels=True, read_message_history=True)
+            overwrites[guild.me] = discord.PermissionOverwrite(
+                view_channel=True, send_messages=True, manage_channels=True,
+                read_message_history=True, use_application_commands=True,
+            )
         if tester_role:
-            overwrites[tester_role] = discord.PermissionOverwrite(view_channel=True, send_messages=True, read_message_history=True)
+            overwrites[tester_role] = discord.PermissionOverwrite(
+                view_channel=True, send_messages=True, read_message_history=True,
+                use_application_commands=True,
+            )
         for role in guild.roles:
             if role.permissions.manage_messages or role.permissions.manage_guild:
-                overwrites[role] = discord.PermissionOverwrite(view_channel=True, send_messages=True, read_message_history=True)
+                overwrites[role] = discord.PermissionOverwrite(
+                    view_channel=True, send_messages=True, read_message_history=True,
+                    use_application_commands=True,
+                )
         doc = {"ticket_id": uuid4().hex[:10], "guild_id": guild.id, "discord_id": interaction.user.id,
                "username": username, "gamemode": gamemode, "status": "open", "created_at": datetime.now(timezone.utc),
                "claimed_by": None}
@@ -1229,7 +1272,7 @@ class PvPClubTiersCog(commands.Cog):
             await interaction.response.send_message("This is not an active PvPClubTiers ticket.", ephemeral=True)
             return
         actor = interaction.user
-        allowed = isinstance(actor, discord.Member) and self.staff_or_tester(actor, ticket["gamemode"])
+        allowed = isinstance(actor, discord.Member) and await self.staff_or_tester(actor, ticket["gamemode"])
         if action == "close":
             if actor.id != ticket["discord_id"] and not allowed:
                 await interaction.response.send_message("Only the ticket owner, matching tester or staff can close it.", ephemeral=True)
@@ -1338,7 +1381,7 @@ class PvPClubTiersCog(commands.Cog):
         if not await self.require_db(interaction):
             return
         actor = interaction.user
-        if not isinstance(actor, discord.Member) or not self.staff_or_tester(actor, gamemode.value):
+        if not isinstance(actor, discord.Member) or not await self.staff_or_tester(actor, gamemode.value):
             await interaction.response.send_message(
                 f"You need the {gamemode.value} Tester role or server management permissions.",
                 ephemeral=True,
