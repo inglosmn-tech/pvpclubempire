@@ -1086,24 +1086,28 @@ class PvPClubTiersCog(commands.Cog):
         if not player:
             await interaction.response.send_message("This member has no PvPClubTiers profile yet.", ephemeral=True)
             return
-        tiers = player.get("tiers", {}) or {}
-        invalid = [mode for mode, tier in tiers.items() if mode not in GAMEMODES or tier not in TIERS]
-        if invalid:
-            await interaction.response.send_message(
-                "This profile contains invalid mode/tier values: " + ", ".join(invalid),
-                ephemeral=True,
-            )
-            return
-        total = sum(POINTS.get(value, 0) for value in tiers.values())
+        stored_tiers = player.get("tiers", {}) or {}
+        tiers = {
+            mode: value for mode, value in stored_tiers.items()
+            if mode in GAMEMODES and value in TIERS
+        }
+        removed_modes = sorted(set(stored_tiers) - set(tiers))
+        total = total_tier_points(tiers)
         await self.db_call(self.players.update_one, {
             "guild_id": interaction.guild.id, "discord_id": member.id
-        }, {"$set": {"total_points": total, "elo": int(player.get("elo", 1000)),
+        }, {"$set": {"tiers": tiers, "total_points": total,
+                     "elo": int(player.get("elo", 1000)),
                      "updated_at": datetime.now(timezone.utc)}})
-        await self.sync_best_role(member, player)
+        await self.sync_best_role(member, {**player, "tiers": tiers})
         best, mode = best_tier(tiers)
+        cleanup_note = (
+            "\\nRemoved retired gamemodes: " + ", ".join(removed_modes)
+            if removed_modes else ""
+        )
         await interaction.response.send_message(
             f"✅ Recalculated {member.mention}: **{total} points**, best tier "
-            f"**{best or 'Unranked'}**" + (f" in **{mode}**" if mode else "") + "."
+            f"**{best or 'Unranked'}**" + (f" in **{mode}**" if mode else "")
+            + "." + cleanup_note
         )
 
     @app_commands.command(name="tier-stats", description="Show the tier distribution for a gamemode.")
@@ -1645,7 +1649,10 @@ class PvPClubTiersCog(commands.Cog):
 
                     for user_id in (winner_id, loser_id):
                         player = player_docs[user_id]
-                        tiers = dict(player.get("tiers") or {})
+                        tiers = {
+                            mode: value for mode, value in (player.get("tiers") or {}).items()
+                            if mode in GAMEMODES and value in TIERS
+                        }
                         streaks = dict(player.get("duel_loss_streaks") or {})
                         streak_key = mode_key(current_duel["gamemode"])
                         old_tier = tiers.get(current_duel["gamemode"])
@@ -2256,7 +2263,7 @@ class PvPClubTiersCog(commands.Cog):
             "guild_id": gid, "banned": {"$ne": True}
         })))
         ranking_docs.sort(key=lambda p: (
-            -sum(POINTS.get(value, 0) for value in (p.get("tiers") or {}).values()),
+            -total_tier_points(p.get("tiers") or {}),
             TIERS.index(best_tier(p.get("tiers") or {})[0]) if best_tier(p.get("tiers") or {})[0] in TIERS else len(TIERS),
             -int(p.get("elo", 1000)),
             str(p.get("username", "")).casefold(),
@@ -2317,12 +2324,12 @@ class PvPClubTiersCog(commands.Cog):
         })))
         if mode == "Overall":
             rows = [p for p in rows if best_tier(p.get("tiers", {}))[0]]
-            rows.sort(key=lambda p: (-sum(POINTS.get(t, 0) for t in (p.get("tiers") or {}).values()),
+            rows.sort(key=lambda p: (-total_tier_points(p.get("tiers") or {}),
                                      str(p.get("username", "")).casefold()))
         else:
             rows = [p for p in rows if (p.get("tiers") or {}).get(mode) in TIERS]
             rows.sort(key=lambda p: (TIERS.index((p.get("tiers") or {})[mode]),
-                                     -sum(POINTS.get(t, 0) for t in (p.get("tiers") or {}).values())))
+                                     -total_tier_points(p.get("tiers") or {})))
         return web.json_response([safe_player(p) for p in rows[:100]])
 
     async def web_testers(self, request):
