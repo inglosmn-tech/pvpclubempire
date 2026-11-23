@@ -1101,7 +1101,7 @@ class PvPClubTiersCog(commands.Cog):
         await self.sync_best_role(member, {**player, "tiers": tiers})
         best, mode = best_tier(tiers)
         cleanup_note = (
-            "\\nRemoved retired gamemodes: " + ", ".join(removed_modes)
+            "\nRemoved retired gamemodes: " + ", ".join(removed_modes)
             if removed_modes else ""
         )
         await interaction.response.send_message(
