@@ -13,6 +13,7 @@ import time
 import unicodedata
 import ipaddress
 from collections import defaultdict, deque
+from statistics import median, pstdev
 from datetime import timedelta
 from urllib.parse import urlsplit
 
@@ -139,6 +140,7 @@ class AutoModEngine:
     def __init__(self, bot):
         self.bot = bot
         self.messages: dict[tuple[int, int], deque[tuple[float, str]]] = defaultdict(deque)
+        self.macro_messages: dict[tuple[int, int, int], deque[tuple[float, str]]] = defaultdict(deque)
         self.ai_last_check: dict[tuple[int, int], float] = {}
         self._ai_locks: dict[int, asyncio.Lock] = {}
 
@@ -247,7 +249,10 @@ class AutoModEngine:
         action = "Message deleted" if deleted else "Flagged; deletion failed (check Manage Messages)"
         bot_member = guild.me
         timeout_minutes = 0
-        if severity in {"severe", "critical"}:
+        if severity == "macro":
+            timeout_minutes = 1
+            action += " • suspected macro (1-minute timeout)"
+        elif severity in {"severe", "critical"}:
             timeout_minutes = 60 if severity == "severe" else 24 * 60
         else:
             key = f"{guild.id}:{member.id}"
@@ -287,14 +292,82 @@ class AutoModEngine:
         except discord.HTTPException:
             pass
 
+    async def _check_spam_channel_macro(self, message: discord.Message, config: dict) -> bool:
+        """Only test for very regular, repeated message timing in configured spam zones."""
+        guild = message.guild
+        member = message.author
+        if guild is None or not isinstance(member, discord.Member):
+            return False
+        if member.bot or member.id == guild.owner_id:
+            return False
+        if member.guild_permissions.administrator or member.guild_permissions.manage_messages:
+            return False
+
+        exempt_roles = {
+            int(role_id) for role_id in config.get("immune_roles", [])
+            if str(role_id).isdigit()
+        }
+        if any(role.id in exempt_roles for role in member.roles):
+            return False
+
+        now = time.monotonic()
+        key = (guild.id, message.channel.id, member.id)
+        entries = self.macro_messages[key]
+        while entries and now - entries[0][0] > 20:
+            entries.popleft()
+        content = normalize_text(message.content or "").strip()[:160]
+        if not content:
+            return False
+        entries.append((now, content))
+        if len(entries) < 10:
+            return False
+
+        sample = list(entries)[-10:]
+        intervals = [sample[i][0] - sample[i - 1][0] for i in range(1, len(sample))]
+        period = median(intervals)
+        # A genuine macro tends to send at almost exactly the same interval.
+        # Use a high sample count and a tight timing tolerance to avoid punishing
+        # people who are simply typing quickly in a spam channel.
+        if not 0.25 <= period <= 2.5:
+            return False
+        if max(intervals) - min(intervals) > max(0.06, period * 0.08):
+            return False
+        if pstdev(intervals) > max(0.025, period * 0.04):
+            return False
+
+        contents = [entry[1] for entry in sample]
+        repeated_count = max(contents.count(value) for value in set(contents))
+        repeated_cycle = (
+            contents[-3:] == contents[-6:-3] == contents[-9:-6]
+        )
+        if repeated_count < 7 and not repeated_cycle:
+            return False
+
+        entries.clear()
+        await self._punish(
+            message,
+            "macro",
+            "Anti-macro: repeated messages at highly regular intervals",
+        )
+        return True
+
     async def check_message(self, message: discord.Message) -> bool:
         guild = message.guild
         if guild is None or message.author.bot:
             return False
+        config = self._config(guild.id)
+        spam_channels = {
+            int(channel_id) for channel_id in config.get("spam_channels", [])
+            if str(channel_id).isdigit()
+        }
+        if message.channel.id in spam_channels:
+            # Normal AutoMod is deliberately skipped in this channel. The
+            # anti-macro detector runs even if server-wide AutoMod is disabled.
+            return await self._check_spam_channel_macro(message, config)
+
         enabled = self.bot.store.data.get("automod_settings", {}).get(str(guild.id), True)
         if enabled is False:
             return False
-        config = self._config(guild.id)
         if self._is_immune(message, config):
             return False
 
@@ -343,6 +416,11 @@ class AutoModCog(commands.Cog):
                 entries.popleft()
             if not entries:
                 self.engine.messages.pop(key, None)
+        for key, entries in list(self.engine.macro_messages.items()):
+            while entries and now - entries[0][0] > 20:
+                entries.popleft()
+            if not entries:
+                self.engine.macro_messages.pop(key, None)
         for key, checked_at in list(self.engine.ai_last_check.items()):
             if now - checked_at > 120:
                 self.engine.ai_last_check.pop(key, None)
@@ -355,6 +433,45 @@ class AutoModCog(commands.Cog):
     @prune_windows.before_loop
     async def before_prune_windows(self):
         await self.bot.wait_until_ready()
+
+    @commands.command(name="spamchannel")
+    @commands.guild_only()
+    @commands.has_guild_permissions(manage_guild=True)
+    async def spamchannel(self, ctx: commands.Context, action: str = "on"):
+        """Toggle the current channel into or out of the AutoMod-exempt spam zone."""
+        if not isinstance(ctx.channel, discord.TextChannel):
+            await ctx.reply("Run this command inside a normal text channel.")
+            return
+        action = action.casefold()
+        if action not in {"on", "enable", "off", "disable", "remove", "status"}:
+            await ctx.reply("Usage: ?spamchannel [on|off|status]")
+            return
+
+        config = self.engine._config(ctx.guild.id)
+        channels = {
+            int(channel_id) for channel_id in config.get("spam_channels", [])
+            if str(channel_id).isdigit()
+        }
+        enabled = ctx.channel.id in channels
+
+        if action == "status":
+            state = "ON — normal AutoMod is bypassed; anti-macro remains active" if enabled else "OFF"
+            await ctx.reply(f"Spam-channel mode for {ctx.channel.mention}: **{state}**.")
+            return
+
+        if action in {"on", "enable"}:
+            channels.add(ctx.channel.id)
+            config["spam_channels"] = sorted(channels)
+            await self.bot.store.save()
+            await ctx.reply(
+                f"✅ {ctx.channel.mention} is now a **spam channel**. "
+                "Normal bot AutoMod is disabled here; anti-macro detection stays on."
+            )
+        else:
+            channels.discard(ctx.channel.id)
+            config["spam_channels"] = sorted(channels)
+            await self.bot.store.save()
+            await ctx.reply(f"✅ Spam-channel mode is now **OFF** in {ctx.channel.mention}.")
 
     @commands.Cog.listener()
     async def on_member_join(self, member: discord.Member):
