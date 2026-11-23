@@ -2262,10 +2262,6 @@ class TicketPanelView(discord.ui.View):
         )
         await interaction.response.send_message(f"Ticket created: {channel.mention}", ephemeral=True)
 
-    @discord.ui.button(label="⚔️ Tier Test", style=discord.ButtonStyle.primary, custom_id="ticket:tier")
-    async def tier(self, interaction: discord.Interaction, button: discord.ui.Button):
-        await self.open_ticket(interaction, "Tier Test")
-
     @discord.ui.button(label="🚨 Report Player", style=discord.ButtonStyle.danger, custom_id="ticket:report")
     async def report(self, interaction: discord.Interaction, button: discord.ui.Button):
         await self.open_ticket(interaction, "Player Report")
