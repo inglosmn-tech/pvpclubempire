@@ -25,6 +25,7 @@ GAMEMODES = [
     "Elytra", "Creeper", "Diamond SMP", "Spear Mace",
 ]
 TIERS = ["HT1", "LT1", "HT2", "LT2", "HT3", "LT3", "HT4", "LT4", "HT5", "LT5"]
+POINTS = {"HT1": 60, "LT1": 45, "HT2": 30, "LT2": 20, "HT3": 10, "LT3": 6, "HT4": 4, "LT4": 3, "HT5": 2, "LT5": 1}
 COLOURS = {
     "HT1": 0xF1C40F, "LT1": 0xE67E22, "HT2": 0xE74C3C, "LT2": 0xC0392B,
     "HT3": 0x9B59B6, "LT3": 0x8E44AD, "HT4": 0x3498DB, "LT4": 0x2980B9,
@@ -105,15 +106,20 @@ def move_tier(tier: str | None, direction: int) -> str:
 
 
 def safe_player(player: dict) -> dict:
-    tier, mode = best_tier(player.get("tiers", {}))
-    updated = player.get("updated_at")
+    tiers = player.get("tiers", {}) or {}
+    total_points = sum(POINTS.get(tier, 0) for tier in tiers.values())
     return {
-        "discord_id": str(player.get("discord_id", "")),
+        "discordId": str(player.get("discord_id", "")),
+        "ign": player.get("username") or "Unknown",
         "username": player.get("username") or "Unknown",
-        "tiers": player.get("tiers", {}),
-        "best_tier": tier,
-        "best_mode": mode,
-        "updated_at": updated.isoformat() if updated else None,
+        "region": "EU",
+        "server": "mcpvp.club",
+        "tiers": tiers,
+        "totalPoints": total_points,
+        "wins": int(player.get("wins", 0)),
+        "losses": int(player.get("losses", 0)),
+        "duelsPlayed": int(player.get("duels_played", 0)),
+        "createdAt": player.get("created_at").isoformat() if player.get("created_at") else None,
     }
 
 
@@ -556,7 +562,8 @@ class IngloTiersCog(commands.Cog):
         now = datetime.now(timezone.utc)
         display_name = username or player.get("username")
         await self.db_call(self.players.update_one, {"guild_id": guild.id, "discord_id": member.id},
-            {"$set": {"tiers": tiers, "cooldowns": cooldowns, "updated_at": now,
+            {"$set": {"tiers": tiers, "total_points": sum(POINTS.get(value, 0) for value in tiers.values()),
+                      "cooldowns": cooldowns, "updated_at": now,
                       "username": display_name, "username_lc": display_name.casefold()}})
         await self.db_call(self.history.insert_one, {"guild_id": guild.id, "discord_id": member.id,
             "username": display_name, "gamemode": gamemode, "old_tier": old_tier or "Unranked",
@@ -582,42 +589,58 @@ class IngloTiersCog(commands.Cog):
                 await channel.send(embed=embed)
         return old_tier, best, best_mode
 
-    @app_commands.command(name="set-tier", description="Submit a player's official IngloTiers test result.")
+    @app_commands.command(name="set-tier", description="Submit a player's tier-test result from their claimed ticket.")
     @app_commands.guild_only()
     @app_commands.choices(gamemode=MODE_OPTIONS, tier=TIER_OPTIONS)
     async def set_tier(self, interaction, member: discord.Member, gamemode: app_commands.Choice[str],
-                       tier: app_commands.Choice[str], minecraft_username: str | None = None):
+                       tier: app_commands.Choice[str]):
         if not await self.require_db(interaction):
             return
         actor = interaction.user
         if not isinstance(actor, discord.Member) or not self.staff_or_tester(actor, gamemode.value):
-            await interaction.response.send_message(f"You need the {gamemode.value} Tester role or server management permissions.", ephemeral=True)
+            await interaction.response.send_message(
+                f"You need the {gamemode.value} Tester role or server management permissions.",
+                ephemeral=True,
+            )
             return
-        ticket = await self.db_call(self.tickets.find_one, {"guild_id": interaction.guild.id,
-            "channel_id": interaction.channel_id, "status": {"$in": ["open", "claimed"]}})
-        if ticket:
-            if ticket["gamemode"] != gamemode.value or ticket["discord_id"] != member.id:
-                await interaction.response.send_message("The member and gamemode must match this ticket.", ephemeral=True)
-                return
-            if ticket.get("claimed_by") not in (None, actor.id) and not actor.guild_permissions.manage_guild:
-                await interaction.response.send_message("This ticket is claimed by another tester.", ephemeral=True)
-                return
-            minecraft_username = minecraft_username or ticket["username"]
-            if not ticket.get("claimed_by"):
-                await self.db_call(self.tickets.update_one, {"ticket_id": ticket["ticket_id"]},
-                                   {"$set": {"claimed_by": actor.id, "status": "claimed"}})
+        ticket = await self.db_call(self.tickets.find_one, {
+            "guild_id": interaction.guild.id,
+            "channel_id": interaction.channel_id,
+            "status": "claimed",
+            "claimed_by": actor.id,
+        })
+        if not ticket:
+            await interaction.response.send_message(
+                "Open the player's test ticket, claim it with the button, then submit the result here.",
+                ephemeral=True,
+            )
+            return
+        if ticket["gamemode"] != gamemode.value or ticket["discord_id"] != member.id:
+            await interaction.response.send_message(
+                "The selected player and gamemode must match this claimed ticket.",
+                ephemeral=True,
+            )
+            return
         try:
-            if minecraft_username:
-                minecraft_username = clean_username(minecraft_username)
-            await self.save_tier(interaction.guild, member, gamemode.value, tier.value, actor, "test", minecraft_username)
+            await self.save_tier(
+                interaction.guild, member, gamemode.value, tier.value, actor,
+                "test", ticket.get("username"),
+            )
         except (ValueError, PyMongoError, discord.HTTPException):
             log.exception("Could not save IngloTiers result")
-            await interaction.response.send_message("Could not save this tier result. Check the logs and try again.", ephemeral=True)
+            await interaction.response.send_message(
+                "Could not save this tier result. Check the Render logs and try again.",
+                ephemeral=True,
+            )
             return
-        if ticket:
-            await self.db_call(self.tickets.update_one, {"ticket_id": ticket["ticket_id"]},
-                               {"$set": {"status": "completed", "completed_at": datetime.now(timezone.utc)}})
-        await interaction.response.send_message(f"✅ Saved **{tier.value}** for {member.mention} in **{gamemode.value}**.")
+        await self.db_call(self.tickets.update_one, {"ticket_id": ticket["ticket_id"]}, {
+            "$set": {"status": "completed", "completed_at": datetime.now(timezone.utc)}
+        })
+        await interaction.response.send_message(
+            f"✅ Saved **{tier.value}** for {member.mention} in **{gamemode.value}**. "
+            "The ticket is marked complete.",
+        )
+
 
     @app_commands.command(name="ign", description="Link or update your Minecraft username.")
     @app_commands.guild_only()
@@ -1087,63 +1110,166 @@ class IngloTiersCog(commands.Cog):
         return int(row["guild_id"]) if row else None
 
     def register_web_routes(self, app):
-        app.router.add_get("/api/inglotiers/leaderboard", self.web_leaderboard)
-        app.router.add_get("/api/inglotiers/player/{identifier}", self.web_player)
-        app.router.add_get("/api/inglotiers/activity", self.web_activity)
+        # Keep the original Tiers-mod front-end API paths and response shapes.
+        app.router.add_get("/api/config", self.web_config)
+        app.router.add_get("/api/stats", self.web_stats)
+        app.router.add_get("/api/players", self.web_players)
+        app.router.add_get("/api/players/search", self.web_search_players)
+        app.router.add_get("/api/players/{ign}", self.web_player)
+        app.router.add_get("/api/leaderboard/{mode}", self.web_mode_leaderboard)
+        app.router.add_get("/api/testers", self.web_testers)
+        app.router.add_get("/api/activity", self.web_activity)
+        app.router.add_get("/api/compare", self.web_compare)
 
-    async def web_leaderboard(self, request):
+    async def website_guild_id(self):
+        configured = os.getenv("DISCORD_GUILD_ID")
+        if configured and configured.isdigit():
+            return int(configured)
         if self.db is None:
-            return web.json_response({"players": [], "total": 0, "error": "database_unavailable"}, status=503)
-        guild_id = await self.web_guild_id()
-        if not guild_id:
-            return web.json_response({"players": [], "total": 0})
-        mode = request.query.get("mode")
-        if mode and mode not in GAMEMODES:
-            return web.json_response({"error": "invalid_gamemode"}, status=400)
-        docs = await self.db_call(lambda: list(self.players.find({"guild_id": guild_id, "tiers": {"$ne": {}}})))
-        rows = []
-        for p in docs:
-            best, best_mode = best_tier(p.get("tiers", {}))
-            value = (p.get("tiers") or {}).get(mode) if mode else best
-            if value in TIERS:
-                rows.append({**safe_player(p), "display_tier": value, "best_mode": best_mode, "sort_index": TIERS.index(value)})
-        rows.sort(key=lambda p: (p["sort_index"], p["username"].casefold()))
-        return web.json_response({"players": rows[:100], "total": len(rows)})
+            return None
+        row = await self.db_call(self.settings.find_one, {"website_public": True})
+        return int(row["guild_id"]) if row else None
+
+    async def web_config(self, request):
+        return web.json_response({"modes": GAMEMODES, "tiers": TIERS, "server": "mcpvp.club", "region": "EU"})
+
+    async def web_stats(self, request):
+        if self.db is None:
+            return web.json_response({"players": 0, "tests": 0})
+        gid = await self.website_guild_id()
+        if not gid:
+            return web.json_response({"players": 0, "tests": 0})
+        players = await self.db_call(self.players.count_documents, {
+            "guild_id": gid, "banned": {"$ne": True}
+        })
+        tests = await self.db_call(self.history.count_documents, {
+            "guild_id": gid, "source": "test"
+        })
+        return web.json_response({"players": players, "tests": tests})
+
+    async def web_players(self, request):
+        if self.db is None:
+            return web.json_response([])
+        gid = await self.website_guild_id()
+        if not gid:
+            return web.json_response([])
+        docs = await self.db_call(lambda: list(self.players.find({
+            "guild_id": gid, "banned": {"$ne": True}
+        }).limit(500)))
+        rows = [safe_player(p) for p in docs]
+        rows.sort(key=lambda p: (-p["totalPoints"], p["ign"].casefold()))
+        return web.json_response(rows)
+
+    async def web_search_players(self, request):
+        if self.db is None:
+            return web.json_response([])
+        gid = await self.website_guild_id()
+        term = str(request.query.get("q", "")).strip()[:16]
+        if not gid or not term:
+            return web.json_response([])
+        docs = await self.db_call(lambda: list(self.players.find({
+            "guild_id": gid, "banned": {"$ne": True},
+            "username_lc": {"$regex": re.escape(term.casefold())},
+        }).limit(10)))
+        rows = [safe_player(p) for p in docs]
+        rows.sort(key=lambda p: (-p["totalPoints"], p["ign"].casefold()))
+        return web.json_response(rows)
 
     async def web_player(self, request):
         if self.db is None:
             return web.json_response({"error": "database_unavailable"}, status=503)
-        guild_id = await self.web_guild_id()
-        if not guild_id:
+        gid = await self.website_guild_id()
+        ign = str(request.match_info["ign"])[:16]
+        if not gid:
             return web.json_response({"error": "not_configured"}, status=404)
-        identifier = request.match_info["identifier"]
-        numeric_id = int(identifier) if identifier.isdigit() else -1
-        player = await self.db_call(self.players.find_one, {"guild_id": guild_id,
-            "$or": [{"username_lc": identifier.casefold()}, {"discord_id": numeric_id}]})
+        player = await self.db_call(self.players.find_one, {
+            "guild_id": gid, "username_lc": ign.casefold(), "banned": {"$ne": True}
+        })
         if not player:
-            return web.json_response({"error": "not_found"}, status=404)
-        rows = await self.db_call(lambda: list(self.history.find({
-            "guild_id": guild_id, "discord_id": player["discord_id"]}).sort("created_at", DESCENDING).limit(20)))
-        history = [{"gamemode": r.get("gamemode"), "old_tier": r.get("old_tier"),
-                    "new_tier": r.get("new_tier"),
-                    "created_at": r["created_at"].isoformat() if r.get("created_at") else None} for r in rows]
-        return web.json_response({"player": safe_player(player), "history": history})
+            return web.json_response({"error": "Player not found"}, status=404)
+        rank = await self.db_call(self.players.count_documents, {
+            "guild_id": gid, "banned": {"$ne": True}, "total_points": {"$gt": player.get("total_points", 0)}
+        }) + 1
+        history_rows = await self.db_call(lambda: list(self.history.find({
+            "guild_id": gid, "discord_id": player["discord_id"]
+        }).sort("created_at", DESCENDING).limit(20)))
+        result = safe_player(player)
+        result["rank"] = rank
+        result["history"] = [{
+            "type": "tier-change", "mode": h.get("gamemode"),
+            "oldTier": h.get("old_tier"), "newTier": h.get("new_tier"),
+            "createdAt": h.get("created_at").isoformat() if h.get("created_at") else None,
+        } for h in history_rows]
+        return web.json_response(result)
+
+    async def web_mode_leaderboard(self, request):
+        if self.db is None:
+            return web.json_response([])
+        gid = await self.website_guild_id()
+        mode = request.match_info["mode"]
+        if mode != "Overall" and mode not in GAMEMODES:
+            return web.json_response({"error": "Unknown gamemode"}, status=404)
+        if not gid:
+            return web.json_response([])
+        rows = await self.db_call(lambda: list(self.players.find({
+            "guild_id": gid, "banned": {"$ne": True}
+        })))
+        if mode == "Overall":
+            rows = [p for p in rows if best_tier(p.get("tiers", {}))[0]]
+            rows.sort(key=lambda p: (-sum(POINTS.get(t, 0) for t in (p.get("tiers") or {}).values()),
+                                     str(p.get("username", "")).casefold()))
+        else:
+            rows = [p for p in rows if (p.get("tiers") or {}).get(mode) in TIERS]
+            rows.sort(key=lambda p: (TIERS.index((p.get("tiers") or {})[mode]),
+                                     -sum(POINTS.get(t, 0) for t in (p.get("tiers") or {}).values())))
+        return web.json_response([safe_player(p) for p in rows[:100]])
+
+    async def web_testers(self, request):
+        if self.db is None:
+            return web.json_response([])
+        gid = await self.website_guild_id()
+        if not gid:
+            return web.json_response([])
+        docs = await self.db_call(lambda: list(self.tester_stats.find({
+            "guild_id": gid
+        }).sort("tests_completed", DESCENDING).limit(50)))
+        return web.json_response([{
+            "testerId": str(p["tester_id"]), "testsCompleted": p.get("tests_completed", 0),
+            "byMode": p.get("by_mode", {}), "lastTestAt": p.get("updated_at"),
+        } for p in docs])
 
     async def web_activity(self, request):
         if self.db is None:
-            return web.json_response({"activity": []}, status=503)
-        guild_id = await self.web_guild_id()
-        if not guild_id:
-            return web.json_response({"activity": []})
-        rows = await self.db_call(lambda: list(self.activity.find({
-            "guild_id": guild_id, "kind": "tier_change"}).sort("created_at", DESCENDING).limit(30)))
-        return web.json_response({"activity": [{
-            "username": r.get("username"), "gamemode": r.get("gamemode"),
-            "old_tier": r.get("old_tier"), "new_tier": r.get("new_tier"),
-            "created_at": r.get("created_at").isoformat() if r.get("created_at") else None} for r in rows])
+            return web.json_response([])
+        gid = await self.website_guild_id()
+        if not gid:
+            return web.json_response([])
+        docs = await self.db_call(lambda: list(self.activity.find({
+            "guild_id": gid, "kind": "tier_change"
+        }).sort("created_at", DESCENDING).limit(30)))
+        return web.json_response([{
+            "type": "tier-change", "playerIgn": p.get("username"), "playerId": str(p.get("discord_id", "")),
+            "mode": p.get("gamemode"), "oldTier": p.get("old_tier"),
+            "newTier": p.get("new_tier"), "details": p.get("source"),
+            "createdAt": p.get("created_at").isoformat() if p.get("created_at") else None,
+        } for p in docs])
 
-    def website_html(self):
-        return WEBSITE_HTML
+    async def web_compare(self, request):
+        if self.db is None:
+            return web.json_response({"error": "database_unavailable"}, status=503)
+        gid = await self.website_guild_id()
+        if not gid:
+            return web.json_response({"error": "not_configured"}, status=404)
+        a = str(request.query.get("a", ""))[:16].casefold()
+        b = str(request.query.get("b", ""))[:16].casefold()
+        first, second = await asyncio.gather(
+            self.db_call(self.players.find_one, {"guild_id": gid, "username_lc": a, "banned": {"$ne": True}}),
+            self.db_call(self.players.find_one, {"guild_id": gid, "username_lc": b, "banned": {"$ne": True}}),
+        )
+        if not first or not second:
+            return web.json_response({"error": "Both players must exist"}, status=404)
+        return web.json_response({"a": safe_player(first), "b": safe_player(second), "modes": GAMEMODES})
+
 
 
 async def setup(bot):
