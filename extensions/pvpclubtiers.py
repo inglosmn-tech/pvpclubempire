@@ -603,7 +603,9 @@ class PvPClubTiersCog(commands.Cog):
             "elo": 1000,
             "created_at": now,
         }
-        set_fields = {"updated_at": now}
+        # Keep the legacy camelCase field populated as well. Some existing
+        # MongoDB deployments still have a unique index on discordId.
+        set_fields = {"updated_at": now, "discordId": member.id}
         if username:
             set_fields.update({"username": username, "username_lc": username.casefold()})
         else:
@@ -1754,7 +1756,11 @@ class PvPClubTiersCog(commands.Cog):
         if not await self.require_db(interaction):
             return
         await self.db_call(self.players.update_one, {"guild_id": interaction.guild.id, "discord_id": member.id},
-                           {"$set": {"tier_banned": True, "tier_ban_reason": reason[:300]}}, upsert=True)
+                           {"$set": {
+                               "tier_banned": True,
+                               "tier_ban_reason": reason[:300],
+                               "discordId": member.id,
+                           }}, upsert=True)
         await interaction.response.send_message(f"{member.mention} is blocked from tier tests.", ephemeral=True)
 
     @app_commands.command(name="tierunban", description="Allow a member to request PvPClubTiers tests again.")
@@ -1764,7 +1770,8 @@ class PvPClubTiersCog(commands.Cog):
         if not await self.require_db(interaction):
             return
         await self.db_call(self.players.update_one, {"guild_id": interaction.guild.id, "discord_id": member.id},
-                           {"$set": {"tier_banned": False}, "$unset": {"tier_ban_reason": ""}}, upsert=True)
+                           {"$set": {"tier_banned": False, "discordId": member.id},
+                            "$unset": {"tier_ban_reason": ""}}, upsert=True)
         await interaction.response.send_message(f"{member.mention} can request tests again.", ephemeral=True)
 
 
@@ -2180,7 +2187,7 @@ class PvPClubTiersCog(commands.Cog):
                         }, session=active_session)
                         if player is None:
                             player = {
-                                "guild_id": guild.id, "discord_id": user_id,
+                                "guild_id": guild.id, "discord_id": user_id, "discordId": user_id,
                                 "username": member.display_name, "username_lc": member.display_name.casefold(),
                                 "tiers": {}, "elo": 1000, "wins": 0, "losses": 0,
                                 "duels_played": 0, "duel_loss_streaks": {}, "created_at": now,
@@ -2237,7 +2244,7 @@ class PvPClubTiersCog(commands.Cog):
                         self.players.update_one({
                             "guild_id": guild.id, "discord_id": user_id,
                         }, {"$set": {
-                            "guild_id": guild.id, "discord_id": user_id,
+                            "guild_id": guild.id, "discord_id": user_id, "discordId": user_id,
                             "username": player.get("username", members[user_id].display_name),
                             "username_lc": player.get("username_lc", members[user_id].display_name.casefold()),
                             "tiers": tiers,
