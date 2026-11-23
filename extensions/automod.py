@@ -146,7 +146,7 @@ class AntiMacroChallengeModal(discord.ui.Modal):
         self.parent_view = view
         self.left = secrets.randbelow(8) + 2
         self.right = secrets.randbelow(8) + 2
-        super().__init__(title="Quick human check", timeout=35)
+        super().__init__(title="Quick human check", timeout=60)
         self.answer = discord.ui.TextInput(
             label=f"What is {self.left} + {self.right}?",
             placeholder="Enter the number",
@@ -194,7 +194,7 @@ class AntiMacroChallengeView(discord.ui.View):
     """A short, user-bound arithmetic verification shown after a strong macro signal."""
 
     def __init__(self, engine, guild_id: int, channel_id: int, user_id: int):
-        super().__init__(timeout=45)
+        super().__init__(timeout=90)
         self.engine = engine
         self.guild_id = guild_id
         self.channel_id = channel_id
@@ -458,7 +458,7 @@ class AutoModEngine:
         try:
             view.message = await message.channel.send(
                 f"🤖 {member.mention}, your messages look automated. "
-                "Click **Verify I'm human** and solve the quick question within **45 seconds**. "
+                "Click **Verify I'm human** and solve the quick question within **90 seconds**. "
                 "If you do not pass, you'll receive a 5-minute timeout.",
                 view=view,
                 allowed_mentions=discord.AllowedMentions(users=[member]),
@@ -618,8 +618,8 @@ class AutoModEngine:
             entries.append((now, content))
             last_five = [item for item in entries if now - item[0] <= 5]
             duplicate_count = sum(1 for _, previous in entries if content and previous == content)
-            if len(last_five) > 9:
-                severity, reason = "spam", "Message flood (>9 messages in 5 seconds)"
+            if len(last_five) > 10:
+                severity, reason = "spam", "Message flood (>10 messages in 5 seconds)"
             elif duplicate_count >= 6:
                 severity, reason = "spam", "Repeated copy-paste spam (6+ matching messages)"
 
