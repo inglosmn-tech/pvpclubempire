@@ -1108,21 +1108,49 @@ class IngloTiersCog(commands.Cog):
                 ephemeral=True,
             )
             return
-        reports = dict(duel.get("reports", {}))
-        reports[str(interaction.user.id)] = {"your": your_score, "opponent": opponent_score}
-        await self.db_call(self.duels.update_one, {"duel_id": duel_id}, {"$set": {"reports": reports}})
+        # Write only this participant's report, then read the combined state back.
+        # This avoids losing the other player's report during simultaneous submissions.
+        await self.db_call(self.duels.update_one, {
+            "guild_id": interaction.guild.id, "duel_id": duel_id, "status": "active"
+        }, {"$set": {
+            f"reports.{interaction.user.id}": {"your": your_score, "opponent": opponent_score}
+        }})
+        duel = await self.db_call(self.duels.find_one, {
+            "guild_id": interaction.guild.id, "duel_id": duel_id
+        })
+        reports = dict((duel or {}).get("reports", {}))
         first = reports.get(str(duel["challenger_id"]))
         second = reports.get(str(duel["opponent_id"]))
         if not first or not second:
-            await interaction.response.send_message("Score saved. Waiting for the other player to submit the mirrored score.", ephemeral=True)
+            await interaction.response.send_message(
+                "Score saved. Waiting for the other player to submit the mirrored score.", ephemeral=True
+            )
             return
         if first["your"] != second["opponent"] or first["opponent"] != second["your"]:
-            await self.db_call(self.duels.update_one, {"duel_id": duel_id}, {"$set": {"status": "disputed"}})
-            await interaction.response.send_message("The reports do not match. Duel disputed; no tiers were changed.", ephemeral=True)
+            await self.db_call(self.duels.update_one, {
+                "guild_id": interaction.guild.id, "duel_id": duel_id, "status": "active"
+            }, {"$set": {"status": "disputed"}})
+            await interaction.response.send_message(
+                "The reports do not match. Duel disputed; no tiers were changed.", ephemeral=True
+            )
             return
         if max(first["your"], first["opponent"]) != needed or first["your"] + first["opponent"] > duel["best_of"]:
-            await self.db_call(self.duels.update_one, {"duel_id": duel_id}, {"$set": {"status": "disputed"}})
-            await interaction.response.send_message("The score does not finish this best-of format. Duel disputed; no tiers changed.", ephemeral=True)
+            await self.db_call(self.duels.update_one, {
+                "guild_id": interaction.guild.id, "duel_id": duel_id, "status": "active"
+            }, {"$set": {"status": "disputed"}})
+            await interaction.response.send_message(
+                "The score does not finish this best-of format. Duel disputed; no tiers changed.", ephemeral=True
+            )
+            return
+
+        # Exactly one interaction can claim settlement for this duel.
+        claimed = await self.db_call(self.duels.update_one, {
+            "guild_id": interaction.guild.id, "duel_id": duel_id, "status": "active"
+        }, {"$set": {"status": "resolving", "resolving_at": datetime.now(timezone.utc)}})
+        if not claimed.modified_count:
+            await interaction.response.send_message(
+                "This duel is already being finalised. No duplicate rating change was applied.", ephemeral=True
+            )
             return
         winner_id = duel["challenger_id"] if first["your"] > first["opponent"] else duel["opponent_id"]
         loser_id = duel["opponent_id"] if winner_id == duel["challenger_id"] else duel["challenger_id"]
