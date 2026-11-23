@@ -714,6 +714,11 @@ class IngloTiersCog(commands.Cog):
         e = discord.Embed(title=f"IngloTiers • {player.get('username', target.display_name)}",
                           description=f"Best tier: **{best or 'Unranked'}**" + (f" in **{mode}**" if mode else ""),
                           colour=COLOURS.get(best, 0x55DDEB))
+        wins = int(player.get("wins", 0))
+        losses = int(player.get("losses", 0))
+        played = wins + losses
+        e.add_field(name="Duel ELO", value=str(player.get("elo", 1000)), inline=True)
+        e.add_field(name="Duel record", value=f"{wins}W / {losses}L" + (f" ({wins / played * 100:.1f}%)" if played else ""), inline=True)
         e.set_thumbnail(url=target.display_avatar.url)
         for m in GAMEMODES:
             e.add_field(name=m, value=(player.get("tiers") or {}).get(m, "—"), inline=True)
@@ -1433,9 +1438,19 @@ class IngloTiersCog(commands.Cog):
         })
         if not player:
             return web.json_response({"error": "Player not found"}, status=404)
-        rank = await self.db_call(self.players.count_documents, {
-            "guild_id": gid, "banned": {"$ne": True}, "total_points": {"$gt": player.get("total_points", 0)}
-        }) + 1
+        ranking_docs = await self.db_call(lambda: list(self.players.find({
+            "guild_id": gid, "banned": {"$ne": True}
+        })))
+        ranking_docs.sort(key=lambda p: (
+            -sum(POINTS.get(value, 0) for value in (p.get("tiers") or {}).values()),
+            -int(p.get("elo", 1000)),
+            str(p.get("username", "")).casefold(),
+        ))
+        rank = next(
+            (index for index, entry in enumerate(ranking_docs, 1)
+             if int(entry.get("discord_id", 0)) == int(player["discord_id"])),
+            None,
+        )
         history_rows = await self.db_call(lambda: list(self.history.find({
             "guild_id": gid, "discord_id": player["discord_id"]
         }).sort("created_at", DESCENDING).limit(20)))
