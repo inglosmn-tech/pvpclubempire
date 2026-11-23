@@ -40,7 +40,7 @@ No finite Neon plan can guarantee storage will never fill. This version reduces 
 - Meow streaks, birthdays and levels use one row per guild/user and update those rows in place.
 - The hot counters are not copied into the main JSONB config row or kept in an ever-growing in-memory cache when PostgreSQL is active.
 - The local JSON snapshot excludes normalized counters/XP when PostgreSQL is active; PostgreSQL is the source of truth for those records.
-- AutoMod stores only the latest ten strike timestamps per member and removes expired strikes after 24 hours.
+- AutoMod stores bounded 24-hour strike and spam-incident history per member. Spam incidents remove recent spam messages first, issue three escalating warnings after the first incident, then apply increasing timeouts.
 - Ended giveaways older than 90 days and closed events older than 180 days are removed from the config state. Manual warning history is retained up to 50 entries per member.
 - Tierwatch is limited to 50 watched Minecraft profiles per server; custom AutoMod patterns are limited to 30 per server.
 - `/storage` (prefix: `?storage`) displays the PostgreSQL database size. Set `DATABASE_STORAGE_LIMIT_MB` to your actual Neon quota to enable automated warnings at 80% and 95%.
@@ -54,7 +54,7 @@ Enable these privileged gateway intents:
 - **Server Members Intent** (welcome messages, autoroles, birthdays and member moderation events)
 - **Message Content Intent** (prefix commands, meow counting and message AutoMod)
 
-Give the bot the permissions needed for the features you enable: Manage Roles, Manage Channels, Manage Messages, Manage Webhooks, Moderate Members, Ban Members, Kick Members, View Channels, Send Messages, Embed Links and Read Message History. Keep the bot's highest role above every role it must assign or moderate.
+Give the bot the permissions needed for the features you enable: Manage Roles, Manage Channels, Manage Messages, Manage Webhooks, Moderate Members, Ban Members, Kick Members, View Channels, Send Messages, Embed Links and Read Message History. Anti-macro checks and spam escalation need Manage Messages and Moderate Members. Keep the bot's highest role above every role it must assign or moderate.
 
 ## First-time setup
 
@@ -78,6 +78,7 @@ Give the bot the permissions needed for the features you enable: Manage Roles, M
 - `?tiersetup` — create the 10 shared LT5–HT1 tier roles, 11 gamemode tester roles, the player-created test-ticket panel, and IngloTiers channels. Requires `MONGO_URI`.
 - `?triviasetup` — create/configure `#trivia` and start a new question every 20 minutes. Correct answers earn one point.
 - `?triviastop` — pause scheduled trivia.
+- `?spamchannel` — mark the current channel as a spam zone where normal bot AutoMod is bypassed but the anti-macro human check stays active. Use `?spamchannel off` to disable it or `?spamchannel status` to check.
 - `?storage` — inspect database storage usage.
 - `/meow-setup` — one-click XP/voice leveling setup.
 
@@ -86,7 +87,9 @@ Give the bot the permissions needed for the features you enable: Manage Roles, M
 - `/tier` — official MCTiers player lookup. The old `/mctiers` command is not registered.
 - `/ign`, `/tiers`, `/profile`, `/tier-leaderboard`, `/tier-rank`, `/search`, `/compare`, `/history`, `/recent` — IngloTiers player commands.
 - `/set-tier` — record a result from a claimed player test ticket. `/claim`, `/unclaim`, `/close` also manage IngloTiers test tickets.
-- `/testerstats`, `/testerboard`, `/tierban`, `/tierunban`, `/duel`, `/duel-score`, `/duel-cancel`, `/trivia-leaderboard` — IngloTiers staff, tester, duel and trivia commands.
+- `/testerstats`, `/testerboard`, `/tierban`, `/tierunban`, `/tier-adjust`, `/tier-recalculate`, `/tier-stats`, `/tier-cooldowns` — IngloTiers staff and tier administration.
+- `/duel`, `/duel-score`, `/duel-cancel`, `/elo`, `/elo-leaderboard` — competitive duels with ELO ratings and win/loss tracking.
+- `/trivia-leaderboard` — trivia points leaderboard.
 - `/tierwatch`, `/tierunwatch`, `/tierwatchlist` — manage official profile change tracking.
 - `/meowstreak`, `/meowstats`, `/meowboard` — meow statistics and leaderboard.
 - `/suggest`, `/birthday`, `/birthdayremove` — community utilities.
