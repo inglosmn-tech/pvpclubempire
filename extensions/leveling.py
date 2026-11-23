@@ -482,16 +482,19 @@ class LevelingCog(commands.Cog):
             due_hours = [int(x) for x in deadchat.get("schedule_hours", []) if int(x) not in sent and now_dt.hour >= int(x)]
             if not due_hours or now_dt.hour >= 23:
                 continue
-            last_activity = float(deadchat.get("last_activity_at", 0) or 0)
-            # On bot restart, recover the last message timestamp from Discord history.
-            if last_activity <= 0:
-                try:
-                    async for message in channel.history(limit=1):
-                        last_activity = message.created_at.timestamp()
-                        break
-                except discord.HTTPException:
-                    continue
-            if now_ts - last_activity < 3600:
+            # Read Discord's latest message directly so activity during a bot restart
+            # is never mistaken for an hour of silence.
+            last_activity = 0.0
+            try:
+                async for latest_message in channel.history(limit=1):
+                    last_activity = latest_message.created_at.timestamp()
+                    break
+            except discord.HTTPException:
+                continue
+            if last_activity <= 0 or now_ts - last_activity < 3600:
+                continue
+            previous_event = config.get("deadchat_event") or {}
+            if float(previous_event.get("started_at", 0) or 0) and now_ts - float(previous_event.get("started_at", 0)) < 2 * 3600:
                 continue
             # Record the daily slot before sending to prevent duplicate pings on retry/restart.
             slot = due_hours[0]
