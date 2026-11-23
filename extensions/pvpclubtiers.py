@@ -186,6 +186,105 @@ modeSelect.addEventListener("change",load);document.getElementById("searchBtn").
 </script></body></html>"""
 
 
+class TesterApplicationPanelView(discord.ui.View):
+    def __init__(self, cog):
+        super().__init__(timeout=None)
+        self.cog = cog
+
+    @discord.ui.button(label="Apply to become a tester", style=discord.ButtonStyle.primary,
+                       emoji="🧪", custom_id="pvpclubtiers:tester-app:apply")
+    async def apply(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if not await self.cog.require_db(interaction):
+            return
+        guild = interaction.guild
+        if guild is None:
+            await interaction.response.send_message("Applications can only be submitted inside the server.", ephemeral=True)
+            return
+        config = await self.cog.setting(guild.id)
+        review_channel_id = config.get("tester_app_review_channel_id")
+        review_channel = guild.get_channel(int(review_channel_id)) if review_channel_id else None
+        if not isinstance(review_channel, discord.TextChannel):
+            await interaction.response.send_message(
+                "Tester applications are not configured yet. Ask an administrator to run ?testerappsetup #review-channel.",
+                ephemeral=True,
+            )
+            return
+        await interaction.response.send_message(
+            "Choose the gamemode you want to become a tester for.",
+            view=TesterApplicationModeSelectView(self.cog),
+            ephemeral=True,
+        )
+
+
+class TesterApplicationModeSelect(discord.ui.Select):
+    def __init__(self, cog):
+        self.cog = cog
+        super().__init__(
+            placeholder="Choose a gamemode…",
+            min_values=1,
+            max_values=1,
+            options=[discord.SelectOption(label=mode, value=mode) for mode in GAMEMODES],
+            custom_id="pvpclubtiers:tester-app:mode",
+        )
+
+    async def callback(self, interaction: discord.Interaction):
+        await interaction.response.send_modal(TesterApplicationModal(self.cog, self.values[0]))
+
+
+class TesterApplicationModeSelectView(discord.ui.View):
+    def __init__(self, cog):
+        super().__init__(timeout=180)
+        self.add_item(TesterApplicationModeSelect(self.cog))
+
+
+class TesterApplicationModal(discord.ui.Modal):
+    def __init__(self, cog, gamemode: str):
+        super().__init__(title=f"{gamemode} tester application")
+        self.cog = cog
+        self.gamemode = gamemode
+        self.minecraft_username = discord.ui.TextInput(
+            label="Minecraft username", min_length=3, max_length=16, required=True,
+            placeholder="Your in-game username",
+        )
+        self.experience = discord.ui.TextInput(
+            label="Previous testing experience", style=discord.TextStyle.paragraph,
+            max_length=500, required=False, placeholder="Optional",
+        )
+        self.reason = discord.ui.TextInput(
+            label="Why should we choose you?", style=discord.TextStyle.paragraph,
+            min_length=20, max_length=1000, required=True,
+            placeholder="Tell us why you would be a good tester",
+        )
+        self.add_item(self.minecraft_username)
+        self.add_item(self.experience)
+        self.add_item(self.reason)
+
+    async def on_submit(self, interaction: discord.Interaction):
+        await self.cog.submit_tester_application(
+            interaction, self.gamemode, str(self.minecraft_username),
+            str(self.experience), str(self.reason),
+        )
+
+
+class TesterApplicationReviewView(discord.ui.View):
+    def __init__(self, cog, *, disabled: bool = False):
+        super().__init__(timeout=None)
+        self.cog = cog
+        if disabled:
+            for child in self.children:
+                child.disabled = True
+
+    @discord.ui.button(label="Accept", style=discord.ButtonStyle.success,
+                       emoji="✅", custom_id="pvpclubtiers:tester-app:accept")
+    async def accept(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await self.cog.review_tester_application(interaction, accepted=True)
+
+    @discord.ui.button(label="Reject", style=discord.ButtonStyle.danger,
+                       emoji="✖️", custom_id="pvpclubtiers:tester-app:reject")
+    async def reject(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await self.cog.review_tester_application(interaction, accepted=False)
+
+
 class TierRequestPanelView(discord.ui.View):
     def __init__(self, cog):
         super().__init__(timeout=None)
@@ -390,6 +489,7 @@ class PvPClubTiersCog(commands.Cog):
         self.mongo_client = None
         self.db = None
         self.matchmaking_queue_lock = asyncio.Lock()
+        self.tester_application_lock = asyncio.Lock()
 
     async def db_call(self, function, *args, **kwargs):
         if self.db is None:
@@ -416,6 +516,7 @@ class PvPClubTiersCog(commands.Cog):
                 self.matchmaking_queue = self.db["matchmaking_queue"]
                 self.trivia_scores = self.db["trivia_scores"]
                 self.trivia_answers = self.db["trivia_answers"]
+                self.tester_applications = self.db["tester_applications"]
                 await asyncio.to_thread(self.players.create_index, [("guild_id", ASCENDING), ("discord_id", ASCENDING)], unique=True)
                 await asyncio.to_thread(self.players.create_index, [("guild_id", ASCENDING), ("username_lc", ASCENDING)])
                 await asyncio.to_thread(self.tickets.create_index, "channel_id", unique=True, sparse=True)
@@ -425,6 +526,8 @@ class PvPClubTiersCog(commands.Cog):
                 await asyncio.to_thread(self.matchmaking_queue.create_index, [("guild_id", ASCENDING), ("user_id", ASCENDING), ("status", ASCENDING)])
                 await asyncio.to_thread(self.trivia_scores.create_index, [("guild_id", ASCENDING), ("user_id", ASCENDING)], unique=True)
                 await asyncio.to_thread(self.trivia_answers.create_index, [("guild_id", ASCENDING), ("question_id", ASCENDING), ("user_id", ASCENDING)], unique=True)
+                await asyncio.to_thread(self.tester_applications.create_index, [("guild_id", ASCENDING), ("review_message_id", ASCENDING)], unique=True)
+                await asyncio.to_thread(self.tester_applications.create_index, [("guild_id", ASCENDING), ("applicant_id", ASCENDING), ("gamemode", ASCENDING), ("status", ASCENDING)])
                 log.info("PvPClubTiers MongoDB connected.")
             except Exception:
                 log.exception("PvPClubTiers MongoDB connection failed; tier features are disabled.")
@@ -435,6 +538,8 @@ class PvPClubTiersCog(commands.Cog):
         else:
             log.warning("MONGO_URI is not set; PvPClubTiers will be disabled until it is configured.")
         self.bot.add_view(TierRequestPanelView(self))
+        self.bot.add_view(TesterApplicationPanelView(self))
+        self.bot.add_view(TesterApplicationReviewView(self))
         self.bot.add_view(TicketControlsView(self))
         self.bot.add_view(DuelInviteView(self))
         self.bot.add_view(MatchmakingPanelView(self))
@@ -597,6 +702,395 @@ class PvPClubTiersCog(commands.Cog):
         except Exception:
             log.exception("PvPClubTiers setup failed")
             await ctx.send("PvPClubTiers setup failed. Check the log and my Discord permissions.")
+
+    @commands.command(name="testerappsetup")
+    @commands.guild_only()
+    @commands.has_guild_permissions(manage_guild=True)
+    async def testerappsetup(self, ctx: commands.Context, reviewchannel: discord.TextChannel):
+        """Create the public tester application panel and set its review channel."""
+        if self.db is None:
+            await ctx.reply("Add MONGO_URI to Render Environment and restart the bot before setting up tester applications.")
+            return
+        guild = ctx.guild
+        if guild is None or not isinstance(ctx.channel, discord.TextChannel):
+            await ctx.reply("Run this command in a normal text channel inside your server.")
+            return
+        bot_member = guild.me
+        if bot_member is None or not bot_member.guild_permissions.manage_roles:
+            await ctx.reply("I need Manage Roles to assign tester roles after an application is accepted.")
+            return
+
+        config = await self.setting(guild.id)
+        role_ids = config.get("tester_roles", {})
+        missing_modes = []
+        for mode in GAMEMODES:
+            role_id = role_ids.get(mode)
+            role = guild.get_role(int(role_id)) if role_id else None
+            if role is None or role >= bot_member.top_role:
+                missing_modes.append(mode)
+        if missing_modes:
+            await ctx.reply(
+                "Some gamemode tester roles are missing or above my highest role. "
+                "Run ?tiersetup first and move my bot role above the tester roles."
+            )
+            return
+
+        for channel in (ctx.channel, reviewchannel):
+            permissions = channel.permissions_for(bot_member)
+            if not permissions.view_channel or not permissions.send_messages or not permissions.embed_links:
+                await ctx.reply(f"I need View Channel, Send Messages and Embed Links in {channel.mention}.")
+                return
+
+        panel_embed = discord.Embed(
+            title="🧪 Apply to become a PvPClub tester",
+            description=(
+                "Want to help test players in PvPClub? Click the button below, choose the gamemode "
+                "you want to test, and complete the short application.\n\n"
+                "Applications are sent to the review channel. **Only the server owner can accept "
+                "or reject an application.** Accepted applicants receive the tester role for their "
+                "selected gamemode only."
+            ),
+            colour=0x55DDEB,
+        )
+        panel_embed.add_field(
+            name="Before applying",
+            value="Use your real Minecraft username and explain why you would be a fair, reliable tester.",
+            inline=False,
+        )
+        panel_embed.set_footer(text="PVPClub Empire • Tester Applications")
+
+        try:
+            panel = None
+            old_channel_id = config.get("tester_app_panel_channel_id")
+            old_message_id = config.get("tester_app_panel_message_id")
+            if old_channel_id and int(old_channel_id) == ctx.channel.id and old_message_id:
+                try:
+                    panel = await ctx.channel.fetch_message(int(old_message_id))
+                except (discord.NotFound, discord.Forbidden, discord.HTTPException, ValueError):
+                    panel = None
+
+            if panel:
+                await panel.edit(embed=panel_embed, view=TesterApplicationPanelView(self))
+            else:
+                panel = await ctx.send(embed=panel_embed, view=TesterApplicationPanelView(self))
+
+            await self.db_call(
+                self.settings.update_one,
+                {"guild_id": guild.id},
+                {"$set": {
+                    "guild_id": guild.id,
+                    "tester_app_review_channel_id": reviewchannel.id,
+                    "tester_app_panel_channel_id": ctx.channel.id,
+                    "tester_app_panel_message_id": panel.id,
+                    "tester_app_updated_at": datetime.now(timezone.utc),
+                }},
+                upsert=True,
+            )
+        except discord.Forbidden:
+            await ctx.reply("Discord denied access. Check my permissions in both channels and my role position.")
+            return
+        except Exception:
+            log.exception("Tester application setup failed for guild %s", guild.id)
+            await ctx.reply("I couldn't set up tester applications. Check the bot log and MongoDB connection.")
+            return
+
+        await ctx.reply(
+            f"✅ **Tester applications are ready!**\n"
+            f"• Application panel: {ctx.channel.mention}\n"
+            f"• Owner-only review channel: {reviewchannel.mention}\n"
+            "• Applicants can choose one of the nine gamemodes.\n"
+            "• Accepting an application assigns only that gamemode's Tester role.",
+            mention_author=False,
+        )
+
+    @testerappsetup.error
+    async def testerappsetup_error(self, ctx: commands.Context, error: commands.CommandError):
+        if isinstance(error, commands.MissingPermissions):
+            await ctx.reply("You need Manage Server to configure tester applications.", mention_author=False)
+        elif isinstance(error, commands.BadArgument):
+            await ctx.reply("Usage: ?testerappsetup #review-channel", mention_author=False)
+        else:
+            log.exception("?testerappsetup failed", exc_info=error)
+            await ctx.reply("I couldn't configure tester applications. Check my permissions and try again.", mention_author=False)
+
+    async def submit_tester_application(
+        self,
+        interaction: discord.Interaction,
+        gamemode: str,
+        minecraft_username: str,
+        experience: str,
+        reason: str,
+    ):
+        if not await self.require_db(interaction):
+            return
+        guild = interaction.guild
+        if guild is None or not isinstance(interaction.user, discord.Member):
+            await interaction.response.send_message("Applications can only be submitted inside the server.", ephemeral=True)
+            return
+        if gamemode not in GAMEMODES:
+            await interaction.response.send_message("That gamemode is not supported.", ephemeral=True)
+            return
+        try:
+            minecraft_username = clean_username(minecraft_username)
+        except ValueError as exc:
+            await interaction.response.send_message(str(exc), ephemeral=True)
+            return
+
+        await interaction.response.defer(ephemeral=True, thinking=True)
+        async with self.tester_application_lock:
+            try:
+                config = await self.setting(guild.id)
+                review_channel_id = config.get("tester_app_review_channel_id")
+                review_channel = guild.get_channel(int(review_channel_id)) if review_channel_id else None
+                if not isinstance(review_channel, discord.TextChannel):
+                    await interaction.followup.send(
+                        "Tester applications are not configured. Ask an administrator to run ?testerappsetup #review-channel.",
+                        ephemeral=True,
+                    )
+                    return
+
+                role_id = config.get("tester_roles", {}).get(gamemode)
+                tester_role = guild.get_role(int(role_id)) if role_id else None
+                if tester_role is None:
+                    await interaction.followup.send(
+                        "The tester role for this gamemode is missing. Ask an administrator to run ?tiersetup.",
+                        ephemeral=True,
+                    )
+                    return
+                if tester_role in interaction.user.roles:
+                    await interaction.followup.send(
+                        f"You already have the {tester_role.mention} role.",
+                        ephemeral=True,
+                    )
+                    return
+
+                existing = await self.db_call(
+                    self.tester_applications.find_one,
+                    {
+                        "guild_id": guild.id,
+                        "applicant_id": interaction.user.id,
+                        "gamemode": gamemode,
+                        "status": "pending",
+                    },
+                )
+                if existing:
+                    await interaction.followup.send(
+                        f"You already have a pending {gamemode} tester application.",
+                        ephemeral=True,
+                    )
+                    return
+
+                application_id = uuid4().hex[:10]
+                application_embed = discord.Embed(
+                    title="🧪 New tester application",
+                    description=f"{interaction.user.mention} wants to become a **{gamemode} Tester**.",
+                    colour=0x55DDEB,
+                    timestamp=discord.utils.utcnow(),
+                )
+                application_embed.add_field(
+                    name="Applicant",
+                    value=f"{interaction.user.mention} (ID: {interaction.user.id})",
+                    inline=True,
+                )
+                application_embed.add_field(name="Gamemode", value=gamemode, inline=True)
+                application_embed.add_field(name="Minecraft username", value=minecraft_username, inline=True)
+                application_embed.add_field(
+                    name="Previous testing experience",
+                    value=(experience.strip() or "Not provided")[:500],
+                    inline=False,
+                )
+                application_embed.add_field(name="Why should we choose them?", value=reason.strip()[:1000], inline=False)
+                application_embed.set_footer(text=f"Application {application_id} • PVPClub Empire")
+
+                message = await review_channel.send(
+                    embed=application_embed,
+                    view=TesterApplicationReviewView(self),
+                    allowed_mentions=discord.AllowedMentions.none(),
+                )
+                application = {
+                    "application_id": application_id,
+                    "guild_id": guild.id,
+                    "applicant_id": interaction.user.id,
+                    "applicant_name": str(interaction.user),
+                    "minecraft_username": minecraft_username,
+                    "gamemode": gamemode,
+                    "experience": experience.strip()[:500],
+                    "reason": reason.strip()[:1000],
+                    "status": "pending",
+                    "review_channel_id": review_channel.id,
+                    "review_message_id": message.id,
+                    "created_at": datetime.now(timezone.utc),
+                }
+                try:
+                    await self.db_call(self.tester_applications.insert_one, application)
+                except Exception:
+                    try:
+                        await message.delete(reason="Tester application could not be saved")
+                    except discord.HTTPException:
+                        pass
+                    raise
+
+                await interaction.followup.send(
+                    f"✅ Your **{gamemode}** tester application has been sent to the owner for review.",
+                    ephemeral=True,
+                )
+            except Exception:
+                log.exception("Could not submit tester application for user %s", interaction.user.id)
+                await interaction.followup.send(
+                    "I couldn't submit your application. Please try again or contact an administrator.",
+                    ephemeral=True,
+                )
+
+    async def review_tester_application(self, interaction: discord.Interaction, *, accepted: bool):
+        guild = interaction.guild
+        if guild is None or interaction.message is None:
+            await interaction.response.send_message("This application can only be reviewed inside its server.", ephemeral=True)
+            return
+        if interaction.user.id != guild.owner_id:
+            await interaction.response.send_message(
+                "Only the server owner can accept or reject tester applications.",
+                ephemeral=True,
+            )
+            return
+        if not await self.require_db(interaction):
+            return
+
+        await interaction.response.defer(ephemeral=True, thinking=True)
+        async with self.tester_application_lock:
+            try:
+                application = await self.db_call(
+                    self.tester_applications.find_one,
+                    {"guild_id": guild.id, "review_message_id": interaction.message.id},
+                )
+                if not application or application.get("status") != "pending":
+                    await interaction.followup.send(
+                        "This application has already been reviewed or is no longer available.",
+                        ephemeral=True,
+                    )
+                    return
+
+                applicant_id = int(application["applicant_id"])
+                gamemode = application["gamemode"]
+                applicant = guild.get_member(applicant_id)
+                if applicant is None:
+                    try:
+                        applicant = await guild.fetch_member(applicant_id)
+                    except discord.NotFound:
+                        applicant = None
+
+                if applicant is None:
+                    await self.db_call(
+                        self.tester_applications.update_one,
+                        {"_id": application["_id"], "status": "pending"},
+                        {"$set": {
+                            "status": "closed",
+                            "review_result": "applicant_left",
+                            "reviewed_by": interaction.user.id,
+                            "reviewed_at": datetime.now(timezone.utc),
+                        }},
+                    )
+                    decision = "Closed — applicant left the server"
+                    result_message = "The applicant is no longer in the server, so this application was closed."
+                    colour = 0x95A5A6
+                elif accepted:
+                    config = await self.setting(guild.id)
+                    role_id = config.get("tester_roles", {}).get(gamemode)
+                    tester_role = guild.get_role(int(role_id)) if role_id else None
+                    bot_member = guild.me
+                    if tester_role is None:
+                        await interaction.followup.send(
+                            f"The {gamemode} Tester role is missing. Run ?tiersetup and try again.",
+                            ephemeral=True,
+                        )
+                        return
+                    if (
+                        bot_member is None
+                        or not bot_member.guild_permissions.manage_roles
+                        or tester_role >= bot_member.top_role
+                    ):
+                        await interaction.followup.send(
+                            "I cannot assign that tester role. Give me Manage Roles and move my highest role above it.",
+                            ephemeral=True,
+                        )
+                        return
+                    if tester_role not in applicant.roles:
+                        await applicant.add_roles(
+                            tester_role,
+                            reason=f"Tester application accepted by server owner ({interaction.user.id})",
+                        )
+                    await self.db_call(
+                        self.tester_applications.update_one,
+                        {"_id": application["_id"], "status": "pending"},
+                        {"$set": {
+                            "status": "accepted",
+                            "review_result": "accepted",
+                            "reviewed_by": interaction.user.id,
+                            "reviewed_at": datetime.now(timezone.utc),
+                            "assigned_role_id": tester_role.id,
+                        }},
+                    )
+                    decision = "Accepted"
+                    result_message = f"✅ {applicant.mention} was accepted for **{gamemode}** and received {tester_role.mention}."
+                    colour = 0x57D69A
+                else:
+                    await self.db_call(
+                        self.tester_applications.update_one,
+                        {"_id": application["_id"], "status": "pending"},
+                        {"$set": {
+                            "status": "rejected",
+                            "review_result": "rejected",
+                            "reviewed_by": interaction.user.id,
+                            "reviewed_at": datetime.now(timezone.utc),
+                        }},
+                    )
+                    decision = "Rejected"
+                    result_message = f"❌ {applicant.mention}'s **{gamemode}** tester application was rejected."
+                    colour = 0xFF647C
+
+                try:
+                    updated_embed = discord.Embed.from_dict(interaction.message.embeds[0].to_dict())
+                    updated_embed.colour = colour
+                    updated_embed.add_field(
+                        name="Application decision",
+                        value=f"**{decision}** by {interaction.user.mention}",
+                        inline=False,
+                    )
+                    updated_embed.timestamp = discord.utils.utcnow()
+                    await interaction.message.edit(
+                        embed=updated_embed,
+                        view=TesterApplicationReviewView(self, disabled=True),
+                        allowed_mentions=discord.AllowedMentions.none(),
+                    )
+                except (IndexError, discord.HTTPException):
+                    log.exception("Could not update reviewed tester application message %s", interaction.message.id)
+
+                if applicant is not None:
+                    try:
+                        if accepted:
+                            await applicant.send(
+                                f"✅ Your **{gamemode}** tester application in **{guild.name}** was accepted. "
+                                f"You now have the {gamemode} Tester role."
+                            )
+                        else:
+                            await applicant.send(
+                                f"Your **{gamemode}** tester application in **{guild.name}** was not accepted."
+                            )
+                    except discord.HTTPException:
+                        pass
+
+                await interaction.followup.send(result_message, ephemeral=True)
+            except discord.Forbidden:
+                log.exception("Discord denied tester application review in guild %s", guild.id)
+                await interaction.followup.send(
+                    "Discord denied the role or message update. Check my permissions and role hierarchy.",
+                    ephemeral=True,
+                )
+            except Exception:
+                log.exception("Tester application review failed in guild %s", guild.id)
+                await interaction.followup.send(
+                    "I couldn't finish reviewing this application. The error was logged.",
+                    ephemeral=True,
+                )
 
     async def create_test_ticket(self, interaction, gamemode, username):
         if not await self.require_db(interaction):
