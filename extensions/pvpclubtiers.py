@@ -119,6 +119,16 @@ def move_duel_tier(tier: str | None, steps: int) -> str:
     return DUEL_TIER_ORDER[max(0, min(len(DUEL_TIER_ORDER) - 1, index + steps))]
 
 
+
+def total_tier_points(tiers: dict | None) -> int:
+    """Count points only for currently supported PvPClubTiers gamemodes."""
+    return sum(
+        POINTS.get(tier, 0)
+        for mode, tier in (tiers or {}).items()
+        if mode in GAMEMODES and tier in TIERS
+    )
+
+
 def safe_player(player: dict) -> dict:
     stored_tiers = player.get("tiers", {}) or {}
     # Only the currently supported nine gamemodes should be exposed to clients.
@@ -126,7 +136,7 @@ def safe_player(player: dict) -> dict:
         mode: tier for mode, tier in stored_tiers.items()
         if mode in GAMEMODES and tier in TIERS
     }
-    total_points = sum(POINTS.get(tier, 0) for tier in tiers.values())
+    total_points = total_tier_points(tiers)
     return {
         "discordId": str(player.get("discord_id", "")),
         "ign": player.get("username") or "Unknown",
@@ -740,7 +750,7 @@ class PvPClubTiersCog(commands.Cog):
         now = datetime.now(timezone.utc)
         display_name = username or player.get("username")
         await self.db_call(self.players.update_one, {"guild_id": guild.id, "discord_id": member.id},
-            {"$set": {"tiers": tiers, "total_points": sum(POINTS.get(value, 0) for value in tiers.values()),
+            {"$set": {"tiers": tiers, "total_points": total_tier_points(tiers),
                       "cooldowns": cooldowns, "updated_at": now,
                       "username": display_name, "username_lc": display_name.casefold()}})
         await self.db_call(self.history.insert_one, {"guild_id": guild.id, "discord_id": member.id,
@@ -1675,7 +1685,7 @@ class PvPClubTiersCog(commands.Cog):
                             "username": player.get("username", members[user_id].display_name),
                             "username_lc": player.get("username_lc", members[user_id].display_name.casefold()),
                             "tiers": tiers,
-                            "total_points": sum(POINTS.get(value, 0) for value in tiers.values()),
+                            "total_points": total_tier_points(tiers),
                             "duel_loss_streaks": streaks,
                             "elo": new_elo,
                             "duels_played": int(player.get("duels_played", 0)) + 1,
