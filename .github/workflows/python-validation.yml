@@ -3,7 +3,7 @@ on:
   push:
     branches:
       - main
-      - feature/inglotiers-and-trivia
+      - feature/spam-tiers-site-upgrade
   pull_request:
 jobs:
   compile:
