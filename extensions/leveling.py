@@ -6,6 +6,7 @@ import logging
 import random
 import time
 from datetime import datetime, timedelta, timezone
+from zoneinfo import ZoneInfo
 
 import discord
 from discord import app_commands
@@ -179,15 +180,32 @@ class LevelingCog(commands.Cog):
         self.text_cooldowns: dict[tuple[int, int], float] = {}
         self.deadchat_view = DeadchatRewardView(self)
         self.bot.add_view(self.deadchat_view)
+        self.cat_invasion_locks: dict[int, asyncio.Lock] = {}
         self.voice_xp_loop.start()
         self.deadchat_watcher.start()
+        self.cat_invasion_watcher.start()
 
     def cog_unload(self):
         self.voice_xp_loop.cancel()
         self.deadchat_watcher.cancel()
+        self.cat_invasion_watcher.cancel()
 
     def _config(self, guild_id: int) -> dict:
         return self.bot.store.data.setdefault("level_config", {}).setdefault(str(guild_id), {})
+
+    def _next_cat_invasion_at(self, *, initial: bool = False) -> float:
+        """Schedule surprises during active hours in the Netherlands."""
+        now = datetime.now(ZoneInfo("Europe/Amsterdam"))
+        delay = timedelta(minutes=random.randint(15, 45)) if initial else timedelta(hours=random.uniform(3, 6))
+        candidate = now + delay
+        if candidate.hour < 10:
+            candidate = candidate.replace(hour=10, minute=0, second=0, microsecond=0)
+            candidate += timedelta(minutes=random.randint(0, 180))
+        elif candidate.hour >= 22:
+            candidate = (candidate + timedelta(days=1)).replace(
+                hour=10, minute=0, second=0, microsecond=0
+            ) + timedelta(minutes=random.randint(0, 180))
+        return candidate.timestamp()
 
     def _xp_multiplier(self, member: discord.Member, config: dict) -> float:
         multipliers = config.get("multipliers", {})
@@ -205,6 +223,7 @@ class LevelingCog(commands.Cog):
         if not message.guild or message.author.bot or not isinstance(message.author, discord.Member):
             return
         config = self._config(message.guild.id)
+        await self.process_cat_invasion_message(message, config)
         if message.channel.id in {int(x) for x in config.get("ignored_channels", []) if str(x).isdigit()}:
             return
         ignored_names = {"afk", "bot-commands"}
@@ -226,11 +245,10 @@ class LevelingCog(commands.Cog):
         if len(self.text_cooldowns) > 2000:
             cutoff = now - 60.0
             self.text_cooldowns = {k: stamp for k, stamp in self.text_cooldowns.items() if stamp >= cutoff}
-        multiplier = self._xp_multiplier(message.author, config)
         event = config.get("deadchat_event") or {}
-        if float(event.get("active_until", 0)) > time.time():
-            multiplier *= 3
-        amount = max(1, int(random.randint(15, 25) * multiplier))
+        deadchat_boost = 3 if float(event.get("active_until", 0)) > time.time() else 1
+        # award_xp applies configured role multipliers once; do not apply them here too.
+        amount = max(1, random.randint(15, 25) * deadchat_boost)
         await self.award_xp(message.author, amount, voice=False)
 
     async def award_xp(self, member: discord.Member, amount: int, *, voice: bool, voice_seconds: int = 0):
@@ -532,6 +550,128 @@ class LevelingCog(commands.Cog):
 
     @deadchat_watcher.before_loop
     async def before_deadchat_watcher(self):
+        await self.bot.wait_until_ready()
+
+
+    async def process_cat_invasion_message(self, message: discord.Message, config: dict | None = None):
+        """Award the first member who answers an active invasion with exactly MEOW."""
+        if not message.guild or not isinstance(message.author, discord.Member):
+            return
+        if (message.content or "").strip().casefold() != "meow":
+            return
+        config = config if config is not None else self._config(message.guild.id)
+        invasion = config.get("cat_invasion") or {}
+        if not invasion.get("enabled") or int(invasion.get("channel_id", 0) or 0) != message.channel.id:
+            return
+        lock = self.cat_invasion_locks.setdefault(message.guild.id, asyncio.Lock())
+        won = False
+        async with lock:
+            invasion = config.get("cat_invasion") or {}
+            event = invasion.get("active_event") or {}
+            now = time.time()
+            if event and float(event.get("expires_at", 0)) > now and not event.get("winner_id"):
+                event["winner_id"] = message.author.id
+                event["won_at"] = now
+                invasion["active_event"] = None
+                invasion["next_at"] = self._next_cat_invasion_at()
+                await self.bot.store.save()
+                won = True
+        if won:
+            try:
+                await self.award_xp(message.author, 25, voice=False)
+                await message.reply(
+                    f"🐱 **CAT INVASION!** {message.author.mention} was the first to MEOW and wins **25 bonus XP**!",
+                    mention_author=False,
+                    allowed_mentions=discord.AllowedMentions(users=[message.author]),
+                )
+            except Exception:
+                log.exception("Could not award Cat Invasion XP in guild %s", message.guild.id)
+
+    @commands.command(name="catinvasion")
+    @commands.guild_only()
+    @commands.has_guild_permissions(manage_guild=True)
+    async def catinvasion(self, ctx: commands.Context):
+        """Enable random Cat Invasion events in the channel where the command is used."""
+        if not isinstance(ctx.channel, discord.TextChannel):
+            await ctx.reply("Use this command in a text channel.")
+            return
+        config = self._config(ctx.guild.id)
+        config["cat_invasion"] = {
+            "enabled": True,
+            "channel_id": ctx.channel.id,
+            "next_at": self._next_cat_invasion_at(initial=True),
+            "active_event": None,
+        }
+        await self.bot.store.save()
+        await ctx.reply(
+            f"🐱 **Cat Invasion enabled** in {ctx.channel.mention}! "
+            "A cat will randomly appear every 3–6 hours (between 10:00 and 22:00, Amsterdam time). "
+            "The first person to type exactly MEOW within 60 seconds wins **25 bonus XP**."
+        )
+
+    @commands.command(name="catinvasionstop")
+    @commands.guild_only()
+    @commands.has_guild_permissions(manage_guild=True)
+    async def catinvasionstop(self, ctx: commands.Context):
+        config = self._config(ctx.guild.id)
+        invasion = config.get("cat_invasion") or {}
+        invasion["enabled"] = False
+        invasion["active_event"] = None
+        await self.bot.store.save()
+        await ctx.reply("🛑 Cat Invasion has been disabled.")
+
+    @tasks.loop(seconds=30)
+    async def cat_invasion_watcher(self):
+        """Spawn scheduled cat events while keeping the timing randomized and persistent."""
+        now = time.time()
+        local_now = datetime.now(ZoneInfo("Europe/Amsterdam"))
+        for guild in list(self.bot.guilds):
+            config = self._config(guild.id)
+            invasion = config.get("cat_invasion") or {}
+            if not invasion.get("enabled"):
+                continue
+            channel = guild.get_channel(int(invasion.get("channel_id", 0) or 0))
+            if not isinstance(channel, discord.TextChannel):
+                continue
+            event = invasion.get("active_event") or {}
+            if event:
+                if float(event.get("expires_at", 0)) > now:
+                    continue
+                invasion["active_event"] = None
+                invasion["next_at"] = self._next_cat_invasion_at()
+                await self.bot.store.save()
+                continue
+            if float(invasion.get("next_at", 0) or 0) > now:
+                continue
+            if not (10 <= local_now.hour < 22):
+                invasion["next_at"] = self._next_cat_invasion_at()
+                await self.bot.store.save()
+                continue
+            embed = cat_embed(
+                "🐈 CAT INVASION!",
+                "A wild cat has appeared in the chat!\n\n"
+                "Type MEOW within 60 seconds.\n"
+                "The first person to answer wins 25 bonus XP. No spam needed — one clean MEOW!",
+                0xFF9CEE,
+            )
+            try:
+                sent = await channel.send(embed=embed)
+            except discord.HTTPException:
+                log.exception("Could not start Cat Invasion in guild %s", guild.id)
+                invasion["next_at"] = now + 300
+                await self.bot.store.save()
+                continue
+            invasion["active_event"] = {
+                "event_id": f"{guild.id}-{sent.id}",
+                "message_id": sent.id,
+                "started_at": now,
+                "expires_at": now + 60,
+                "winner_id": None,
+            }
+            await self.bot.store.save()
+
+    @cat_invasion_watcher.before_loop
+    async def before_cat_invasion_watcher(self):
         await self.bot.wait_until_ready()
 
     @tasks.loop(seconds=60)

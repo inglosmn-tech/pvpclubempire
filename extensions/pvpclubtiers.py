@@ -1,4 +1,4 @@
-"""IngloTiers tier testing, player rankings, MongoDB persistence, website and trivia."""
+"""PvPClubTiers tier testing, player rankings, MongoDB persistence, website and trivia."""
 from __future__ import annotations
 
 import asyncio
@@ -19,7 +19,7 @@ from discord.ext import commands, tasks
 from pymongo import MongoClient, ASCENDING, DESCENDING
 from pymongo.errors import DuplicateKeyError, PyMongoError
 
-log = logging.getLogger("pvpclub-empire.inglotiers")
+log = logging.getLogger("pvpclub-empire.pvpclubtiers")
 
 GAMEMODES = [
     "Vanilla", "Sword", "NethPot", "Pot", "UHC", "Axe", "SMP",
@@ -46,8 +46,8 @@ TRIVIA_QUESTIONS = [
     ("Which Minecraft weapon deals extra damage when falling?", ["mace", "the mace"]),
     ("How many inventory slots are in the main inventory, excluding the hotbar?", ["27"]),
     ("Which mob explodes when it gets close to a player?", ["creeper"]),
-    ("What is the strongest tier in IngloTiers?", ["ht1"]),
-    ("What is the weakest tier in IngloTiers?", ["lt5"]),
+    ("What is the strongest tier in PvPClubTiers?", ["ht1"]),
+    ("What is the weakest tier in PvPClubTiers?", ["lt5"]),
     ("What does SMP stand for?", ["survival multiplayer"]),
     ("Which material is used to make an enchanting table?", ["diamond", "diamonds"]),
     ("How many hearts does a player have at full health?", ["10", "ten"]),
@@ -141,7 +141,7 @@ def safe_player(player: dict) -> dict:
 
 
 WEBSITE_HTML = r"""<!doctype html><html lang="en"><head><meta charset="utf-8">
-<meta name="viewport" content="width=device-width,initial-scale=1"><title>IngloTiers — MCPvP Rankings</title>
+<meta name="viewport" content="width=device-width,initial-scale=1"><title>PvPClubTiers — MCPvP Rankings</title>
 <style>
 :root{color-scheme:dark;--bg:#080d18;--panel:#111b2b;--line:#273a54;--cyan:#5ce1e6;--text:#eef7ff;--muted:#9aabc0}
 *{box-sizing:border-box}body{margin:0;background:radial-gradient(ellipse at 50% -10%,#173b52 0%,var(--bg) 55%);color:var(--text);font:15px/1.5 Inter,system-ui,sans-serif;min-height:100vh}
@@ -155,18 +155,18 @@ main{max-width:1180px;margin:22px auto;padding:0 22px 55px}.hero{padding:30px 0 
 table{width:100%;border-collapse:collapse;margin-top:16px}th{text-align:left;color:var(--muted);font-size:11px;text-transform:uppercase;letter-spacing:.12em;font-weight:800;padding:12px 10px;border-bottom:1px solid var(--line)}td{padding:14px 10px;border-bottom:1px solid #22334a}tr:last-child td{border:0}.player{font-weight:800;cursor:pointer}.player:hover{color:var(--cyan)}
 .tier{display:inline-block;border-radius:7px;padding:3px 9px;font-weight:900;font-size:12px;background:#1d334c;color:var(--cyan)}.muted{color:var(--muted)}.empty{text-align:center;color:var(--muted);padding:35px 10px}.profile{display:none}.profile h2{margin:4px 0}.profile-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(120px,1fr));gap:9px;margin-top:12px}.mode-card{background:#0b1524;border:1px solid var(--line);padding:12px;border-radius:12px}.mode-card small{display:block;color:var(--muted)}
 footer{max-width:1180px;margin:auto;padding:20px 22px 35px;color:var(--muted);font-size:12px}@media(max-width:600px){header{padding-top:20px}.pill{display:none}.stats{grid-template-columns:1fr 1fr}.panel{padding:14px}th:nth-child(3),td:nth-child(3){display:none}}
-</style></head><body><header><div class="brand"><div class="logo">I</div><div><strong>IngloTiers</strong><small>EU Minecraft PvP • mcpvp.club</small></div></div><span class="pill">PLAYER RANKINGS</span></header>
+</style></head><body><header><div class="brand"><div class="logo">P</div><div><strong>PvPClubTiers</strong><small>EU Minecraft PvP • mcpvp.club</small></div></div><span class="pill">PLAYER RANKINGS</span></header>
 <main><section class="hero"><div class="eyebrow">The community tier list</div><h1>Find your place<br>on the leaderboard.</h1><p>Browse player tiers across every supported gamemode, compare profiles and follow recent tier changes.</p></section>
 <section class="panel"><div class="toolbar"><select id="mode"><option value="">Overall ranking</option></select><input id="search" placeholder="Search Minecraft username…"><button id="searchBtn">Search</button></div>
 <div class="stats"><div class="stat"><small>Ranked players</small><strong id="players">—</strong></div><div class="stat"><small>Gamemodes</small><strong>11</strong></div><div class="stat"><small>Tier levels</small><strong>10</strong></div></div>
 <div style="overflow-x:auto"><table><thead><tr><th>#</th><th>Player</th><th>Best mode</th><th>Best tier</th></tr></thead><tbody id="rows"><tr><td colspan="4" class="empty">Loading leaderboard…</td></tr></tbody></table></div></section>
-<section class="panel profile" id="profile"><div class="eyebrow">Player profile</div><h2 id="profileName"></h2><div class="muted" id="profileBest"></div><div class="profile-grid" id="profileModes"></div><h3>Recent tier history</h3><div id="profileHistory" class="muted"></div></section></main><footer>IngloTiers • EU only • mcpvp.club</footer>
+<section class="panel profile" id="profile"><div class="eyebrow">Player profile</div><h2 id="profileName"></h2><div class="muted" id="profileBest"></div><div class="profile-grid" id="profileModes"></div><h3>Recent tier history</h3><div id="profileHistory" class="muted"></div></section></main><footer>PvPClubTiers • EU only • mcpvp.club</footer>
 <script>
 const modes=["Vanilla","Sword","NethPot","Pot","UHC","Axe","SMP","Elytra","Creeper","Diamond SMP","Spear Mace"];const modeSelect=document.getElementById("mode");
 modes.forEach(m=>{const o=document.createElement("option");o.value=m;o.textContent=m;modeSelect.appendChild(o)});
 function badge(t){const s=document.createElement("span");s.className="tier";s.textContent=t||"Unranked";return s}
-async function load(){const mode=modeSelect.value;const body=document.getElementById("rows");body.innerHTML='<tr><td colspan="4" class="empty">Loading…</td></tr>';try{const r=await fetch("/api/inglotiers/leaderboard"+(mode?"?mode="+encodeURIComponent(mode):""));const x=await r.json();document.getElementById("players").textContent=x.total??0;body.innerHTML="";if(!x.players||!x.players.length){body.innerHTML='<tr><td colspan="4" class="empty">No ranked players yet. Ask staff to set up IngloTiers.</td></tr>';return}x.players.forEach((p,i)=>{const tr=document.createElement("tr");const rank=document.createElement("td");rank.textContent=i+1;const name=document.createElement("td");name.className="player";name.textContent=p.username;name.onclick=()=>profile(p.username);const bm=document.createElement("td");bm.textContent=p.best_mode||"—";bm.className="muted";const tier=document.createElement("td");tier.appendChild(badge(mode?(p.tiers||{})[mode]:p.best_tier));tr.append(rank,name,bm,tier);body.appendChild(tr)})}catch(e){body.innerHTML='<tr><td colspan="4" class="empty">Leaderboard is temporarily unavailable.</td></tr>'}}
-async function profile(name){try{const r=await fetch("/api/inglotiers/player/"+encodeURIComponent(name));if(!r.ok)return;const x=await r.json();document.getElementById("profile").style.display="block";document.getElementById("profileName").textContent=x.player.username;document.getElementById("profileBest").textContent="Best tier: "+(x.player.best_tier||"Unranked")+" · "+(x.player.best_mode||"No ranked mode");const box=document.getElementById("profileModes");box.innerHTML="";modes.forEach(m=>{const d=document.createElement("div");d.className="mode-card";const sm=document.createElement("small");sm.textContent=m;d.append(sm,badge((x.player.tiers||{})[m]));box.appendChild(d)});document.getElementById("profileHistory").textContent=x.history&&x.history.length?x.history.map(h=>h.gamemode+": "+h.old_tier+" → "+h.new_tier).join(" · "):"No tier history yet.";document.getElementById("profile").scrollIntoView({behavior:"smooth",block:"start"})}catch(e){}}
+async function load(){const mode=modeSelect.value;const body=document.getElementById("rows");body.innerHTML='<tr><td colspan="4" class="empty">Loading…</td></tr>';try{const r=await fetch("/api/pvpclubtiers/leaderboard"+(mode?"?mode="+encodeURIComponent(mode):""));const x=await r.json();document.getElementById("players").textContent=x.total??0;body.innerHTML="";if(!x.players||!x.players.length){body.innerHTML='<tr><td colspan="4" class="empty">No ranked players yet. Ask staff to set up PvPClubTiers.</td></tr>';return}x.players.forEach((p,i)=>{const tr=document.createElement("tr");const rank=document.createElement("td");rank.textContent=i+1;const name=document.createElement("td");name.className="player";name.textContent=p.username;name.onclick=()=>profile(p.username);const bm=document.createElement("td");bm.textContent=p.best_mode||"—";bm.className="muted";const tier=document.createElement("td");tier.appendChild(badge(mode?(p.tiers||{})[mode]:p.best_tier));tr.append(rank,name,bm,tier);body.appendChild(tr)})}catch(e){body.innerHTML='<tr><td colspan="4" class="empty">Leaderboard is temporarily unavailable.</td></tr>'}}
+async function profile(name){try{const r=await fetch("/api/pvpclubtiers/player/"+encodeURIComponent(name));if(!r.ok)return;const x=await r.json();document.getElementById("profile").style.display="block";document.getElementById("profileName").textContent=x.player.username;document.getElementById("profileBest").textContent="Best tier: "+(x.player.best_tier||"Unranked")+" · "+(x.player.best_mode||"No ranked mode");const box=document.getElementById("profileModes");box.innerHTML="";modes.forEach(m=>{const d=document.createElement("div");d.className="mode-card";const sm=document.createElement("small");sm.textContent=m;d.append(sm,badge((x.player.tiers||{})[m]));box.appendChild(d)});document.getElementById("profileHistory").textContent=x.history&&x.history.length?x.history.map(h=>h.gamemode+": "+h.old_tier+" → "+h.new_tier).join(" · "):"No tier history yet.";document.getElementById("profile").scrollIntoView({behavior:"smooth",block:"start"})}catch(e){}}
 modeSelect.addEventListener("change",load);document.getElementById("searchBtn").onclick=()=>profile(document.getElementById("search").value.trim());document.getElementById("search").addEventListener("keydown",e=>{if(e.key==="Enter")document.getElementById("searchBtn").click()});load();
 </script></body></html>"""
 
@@ -369,7 +369,7 @@ class DuelResultView(discord.ui.View):
         await self.cog.record_matchmaking_result(interaction, player_number=2)
 
 
-class IngloTiersCog(commands.Cog):
+class PvPClubTiersCog(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
         self.mongo_client = None
@@ -386,8 +386,10 @@ class IngloTiersCog(commands.Cog):
         if uri:
             try:
                 self.mongo_client = MongoClient(uri, serverSelectionTimeoutMS=10000, connectTimeoutMS=10000,
-                                                appname="PVPClubEmpire-IngloTiers")
+                                                appname="PVPClubEmpire-PvPClubTiers")
                 await asyncio.to_thread(self.mongo_client.admin.command, "ping")
+                # Keep the original MongoDB database namespace so existing player profiles,
+                # tier history, tickets and duels remain available after this rebrand.
                 self.db = self.mongo_client["inglotiers"]
                 self.players = self.db["players"]
                 self.settings = self.db["guild_settings"]
@@ -408,15 +410,15 @@ class IngloTiersCog(commands.Cog):
                 await asyncio.to_thread(self.matchmaking_queue.create_index, [("guild_id", ASCENDING), ("user_id", ASCENDING), ("status", ASCENDING)])
                 await asyncio.to_thread(self.trivia_scores.create_index, [("guild_id", ASCENDING), ("user_id", ASCENDING)], unique=True)
                 await asyncio.to_thread(self.trivia_answers.create_index, [("guild_id", ASCENDING), ("question_id", ASCENDING), ("user_id", ASCENDING)], unique=True)
-                log.info("IngloTiers MongoDB connected.")
+                log.info("PvPClubTiers MongoDB connected.")
             except Exception:
-                log.exception("IngloTiers MongoDB connection failed; tier features are disabled.")
+                log.exception("PvPClubTiers MongoDB connection failed; tier features are disabled.")
                 if self.mongo_client:
                     self.mongo_client.close()
                 self.mongo_client = None
                 self.db = None
         else:
-            log.warning("MONGO_URI is not set; IngloTiers will be disabled until it is configured.")
+            log.warning("MONGO_URI is not set; PvPClubTiers will be disabled until it is configured.")
         self.bot.add_view(TierRequestPanelView(self))
         self.bot.add_view(TicketControlsView(self))
         self.bot.add_view(DuelInviteView(self))
@@ -433,7 +435,7 @@ class IngloTiersCog(commands.Cog):
     async def require_db(self, interaction: discord.Interaction) -> bool:
         if self.db is None:
             await interaction.response.send_message(
-                "IngloTiers database is not connected. Add MONGO_URI in Render Environment, then restart the bot.",
+                "PvPClubTiers database is not connected. Add MONGO_URI in Render Environment, then restart the bot.",
                 ephemeral=True)
             return False
         return True
@@ -463,20 +465,29 @@ class IngloTiersCog(commands.Cog):
                 or any(role.name == f"{gamemode} Tester" for role in member.roles))
 
     async def find_category(self, guild: discord.Guild, name: str):
-        return discord.utils.get(guild.categories, name=name) or await guild.create_category(name, reason="IngloTiers setup")
+        category = discord.utils.get(guild.categories, name=name)
+        if category:
+            return category
+        # Rename the old category in place instead of creating a duplicate.
+        legacy_name = name.replace("PVPCLUBTIERS", "INGLOTIERS")
+        legacy = discord.utils.get(guild.categories, name=legacy_name)
+        if legacy:
+            await legacy.edit(name=name, reason="PvPClubTiers rebrand")
+            return legacy
+        return await guild.create_category(name, reason="PvPClubTiers setup")
 
     async def find_channel(self, guild, name, category, send_disabled=False):
         channel = discord.utils.get(guild.text_channels, name=name)
         if channel:
             if channel.category_id != category.id:
-                await channel.edit(category=category, reason="IngloTiers setup")
+                await channel.edit(category=category, reason="PvPClubTiers setup")
             return channel
         overwrite = {guild.default_role: discord.PermissionOverwrite(view_channel=True)}
         if send_disabled:
             overwrite[guild.default_role].send_messages = False
         if guild.me:
             overwrite[guild.me] = discord.PermissionOverwrite(view_channel=True, send_messages=True, read_message_history=True)
-        return await guild.create_text_channel(name, category=category, overwrites=overwrite, reason="IngloTiers setup")
+        return await guild.create_text_channel(name, category=category, overwrites=overwrite, reason="PvPClubTiers setup")
 
     @commands.command(name="tiersetup")
     @commands.guild_only()
@@ -486,14 +497,14 @@ class IngloTiersCog(commands.Cog):
             await ctx.reply("Add MONGO_URI to Render Environment and restart the bot before running tier setup.")
             return
         guild = ctx.guild
-        await ctx.reply("Setting up IngloTiers: checking roles, categories and test channels…")
+        await ctx.reply("Setting up PvPClubTiers: checking roles, categories and test channels…")
         try:
             tier_roles = {}
             for tier in reversed(TIERS):
                 role = discord.utils.get(guild.roles, name=tier)
                 if role is None:
                     role = await guild.create_role(name=tier, colour=discord.Colour(COLOURS[tier]),
-                                                   reason="IngloTiers shared tier roles")
+                                                   reason="PvPClubTiers shared tier roles")
                 tier_roles[tier] = role.id
             tester_roles = {}
             for mode in GAMEMODES:
@@ -501,14 +512,14 @@ class IngloTiersCog(commands.Cog):
                 role = discord.utils.get(guild.roles, name=name)
                 if role is None:
                     role = await guild.create_role(name=name, colour=discord.Colour(0x36C5D8),
-                                                   reason=f"IngloTiers {mode} tester role")
+                                                   reason=f"PvPClubTiers {mode} tester role")
                 tester_roles[mode] = role.id
-            public_category = await self.find_category(guild, "INGLOTIERS")
+            public_category = await self.find_category(guild, "PVPCLUBTIERS")
             ticket_category = await self.find_category(guild, "TIER TEST TICKETS")
             request = await self.find_channel(guild, "request-test", public_category, True)
             results = await self.find_channel(guild, "results", public_category)
             activity = await self.find_channel(guild, "tier-activity", public_category)
-            logs_category = await self.find_category(guild, "INGLOTIERS LOGS")
+            logs_category = await self.find_category(guild, "PVPCLUBTIERS LOGS")
             log_overwrites = {
                 guild.default_role: discord.PermissionOverwrite(view_channel=False),
             }
@@ -524,11 +535,11 @@ class IngloTiersCog(commands.Cog):
             logs = discord.utils.get(guild.text_channels, name="ticket-logs")
             if logs:
                 await logs.edit(category=logs_category, overwrites=log_overwrites,
-                                reason="IngloTiers private ticket logs")
+                                reason="PvPClubTiers private ticket logs")
             else:
                 logs = await guild.create_text_channel(
                     "ticket-logs", category=logs_category, overwrites=log_overwrites,
-                    reason="IngloTiers private ticket logs"
+                    reason="PvPClubTiers private ticket logs"
                 )
             matchmaking = await self.find_channel(guild, "matchmaking", public_category)
             await self.db_call(self.settings.update_one, {"guild_id": guild.id}, {"$set": {
@@ -552,7 +563,7 @@ class IngloTiersCog(commands.Cog):
                                            "3. Wait for a tester with the matching gamemode role.\n\n"
                                            "A seven-day cooldown applies after a completed test in that gamemode."),
                               colour=0x55DDEB)
-            e.set_footer(text="IngloTiers • EU • mcpvp.club")
+            e.set_footer(text="PvPClubTiers • EU • mcpvp.club")
             if panel:
                 await panel.edit(embed=e, view=TierRequestPanelView(self))
             else:
@@ -560,17 +571,17 @@ class IngloTiersCog(commands.Cog):
                 await self.db_call(self.settings.update_one, {"guild_id": guild.id},
                                    {"$set": {"request_panel_message_id": panel.id}})
             await ctx.send(
-                "✅ **IngloTiers setup complete!**\n"
+                "✅ **PvPClubTiers setup complete!**\n"
                 "• 10 shared tier roles checked/created (LT5 → HT1).\n"
                 f"• {len(GAMEMODES)} gamemode tester roles checked/created.\n"
                 f"• Requests: {request.mention}\n• Results: {results.mention}\n"
                 f"• Activity: {activity.mention}\n• Logs: {logs.mention}\n• Matchmaking: {matchmaking.mention}\n\n"
-                "Assign tester roles to trusted members and put my bot role above the IngloTiers roles.")
+                "Assign tester roles to trusted members and put my bot role above the PvPClubTiers roles.")
         except discord.Forbidden:
             await ctx.send("I need Manage Roles, Manage Channels, View Channels and Send Messages to finish setup.")
         except Exception:
-            log.exception("IngloTiers setup failed")
-            await ctx.send("IngloTiers setup failed. Check the log and my Discord permissions.")
+            log.exception("PvPClubTiers setup failed")
+            await ctx.send("PvPClubTiers setup failed. Check the log and my Discord permissions.")
 
     async def create_test_ticket(self, interaction, gamemode, username):
         if not await self.require_db(interaction):
@@ -621,17 +632,17 @@ class IngloTiersCog(commands.Cog):
             channel = await guild.create_text_channel(
                 f"tier-{mode_key(gamemode)[:12]}-{username.casefold()[:12]}",
                 category=category, overwrites=overwrites,
-                topic=f"IngloTiers test {doc['ticket_id']} • player {interaction.user.id}")
+                topic=f"PvPClubTiers test {doc['ticket_id']} • player {interaction.user.id}")
             doc["channel_id"] = channel.id
             await self.db_call(self.tickets.insert_one, doc)
             await self.db_call(self.activity.insert_one, {"guild_id": guild.id, "kind": "ticket_opened",
                                "username": username, "gamemode": gamemode, "discord_id": interaction.user.id,
                                "created_at": datetime.now(timezone.utc)})
         except Exception:
-            log.exception("Could not create IngloTiers ticket")
+            log.exception("Could not create PvPClubTiers ticket")
             if "channel" in locals():
                 try:
-                    await channel.delete(reason="IngloTiers database write failed")
+                    await channel.delete(reason="PvPClubTiers database write failed")
                 except discord.HTTPException:
                     pass
             await interaction.response.send_message("I couldn't create the ticket. Please contact staff.", ephemeral=True)
@@ -649,7 +660,7 @@ class IngloTiersCog(commands.Cog):
         ticket = await self.db_call(self.tickets.find_one, {"guild_id": interaction.guild.id,
             "channel_id": interaction.channel_id, "status": {"$in": ["open", "claimed", "completed"]}})
         if not ticket:
-            await interaction.response.send_message("This is not an active IngloTiers ticket.", ephemeral=True)
+            await interaction.response.send_message("This is not an active PvPClubTiers ticket.", ephemeral=True)
             return
         actor = interaction.user
         allowed = isinstance(actor, discord.Member) and self.staff_or_tester(actor, ticket["gamemode"])
@@ -663,10 +674,10 @@ class IngloTiersCog(commands.Cog):
             config = await self.setting(interaction.guild.id)
             log_channel = interaction.guild.get_channel(config.get("logs_channel_id", 0))
             if log_channel:
-                await log_channel.send(f"Closed IngloTiers ticket {ticket['ticket_id']} for {ticket['username']} ({ticket['gamemode']}) by {actor.mention}.")
+                await log_channel.send(f"Closed PvPClubTiers ticket {ticket['ticket_id']} for {ticket['username']} ({ticket['gamemode']}) by {actor.mention}.")
             await asyncio.sleep(5)
             try:
-                await interaction.channel.delete(reason=f"IngloTiers ticket closed by {actor}")
+                await interaction.channel.delete(reason=f"PvPClubTiers ticket closed by {actor}")
             except discord.HTTPException:
                 pass
             return
@@ -704,9 +715,9 @@ class IngloTiersCog(commands.Cog):
         desired_id = role_map.get(tier) if tier else None
         desired = member.guild.get_role(int(desired_id)) if desired_id else None
         if remove:
-            await member.remove_roles(*remove, reason="IngloTiers overall best tier updated")
+            await member.remove_roles(*remove, reason="PvPClubTiers overall best tier updated")
         if desired and desired not in member.roles:
-            await member.add_roles(desired, reason=f"IngloTiers best tier: {tier} in {mode}")
+            await member.add_roles(desired, reason=f"PvPClubTiers best tier: {tier} in {mode}")
 
     async def save_tier(self, guild, member, gamemode, new_tier, tester, source, username=None, reason=None):
         player = await self.get_or_create_player(guild.id, member, username)
@@ -739,7 +750,7 @@ class IngloTiersCog(commands.Cog):
         msg = (f"{member.mention} ({display_name}) received **{new_tier}** in **{gamemode}**.\n"
                f"Previous: **{old_tier or 'Unranked'}**\nOverall role: **{best or 'Unranked'}**"
                + (f" ({best_mode})" if best_mode else ""))
-        embed = discord.Embed(title="🏆 IngloTiers result", description=msg, colour=COLOURS[new_tier])
+        embed = discord.Embed(title="🏆 PvPClubTiers result", description=msg, colour=COLOURS[new_tier])
         embed.set_footer(text=f"Recorded by {tester.display_name} • mcpvp.club")
         config = await self.setting(guild.id)
         for key in ("results_channel_id", "activity_channel_id"):
@@ -786,7 +797,7 @@ class IngloTiersCog(commands.Cog):
                 "test", ticket.get("username"),
             )
         except (ValueError, PyMongoError, discord.HTTPException):
-            log.exception("Could not save IngloTiers result")
+            log.exception("Could not save PvPClubTiers result")
             await interaction.response.send_message(
                 "Could not save this tier result. Check the Render logs and try again.",
                 ephemeral=True,
@@ -811,7 +822,7 @@ class IngloTiersCog(commands.Cog):
         except ValueError as exc:
             await interaction.response.send_message(str(exc), ephemeral=True)
             return
-        await interaction.response.send_message(f"Your IngloTiers username is now **{player['username']}**.", ephemeral=True)
+        await interaction.response.send_message(f"Your PvPClubTiers username is now **{player['username']}**.", ephemeral=True)
 
     @app_commands.command(name="tiers", description="View a player's tier in every gamemode.")
     @app_commands.guild_only()
@@ -821,7 +832,7 @@ class IngloTiersCog(commands.Cog):
         target = member or interaction.user
         player = await self.get_player(interaction.guild.id, target.id)
         if not player:
-            await interaction.response.send_message(f"No IngloTiers profile found for {target.mention}.", ephemeral=True)
+            await interaction.response.send_message(f"No PvPClubTiers profile found for {target.mention}.", ephemeral=True)
             return
         best, best_mode = best_tier(player.get("tiers", {}))
         lines = [f"**{m}:** {(player.get('tiers') or {}).get(m, 'Unranked')}" for m in GAMEMODES]
@@ -831,7 +842,7 @@ class IngloTiersCog(commands.Cog):
         e.set_thumbnail(url=target.display_avatar.url)
         await interaction.response.send_message(embed=e)
 
-    @app_commands.command(name="profile", description="View a player's IngloTiers profile.")
+    @app_commands.command(name="profile", description="View a player's PvPClubTiers profile.")
     @app_commands.guild_only()
     async def profile(self, interaction, member: discord.Member | None = None):
         if not await self.require_db(interaction):
@@ -842,7 +853,7 @@ class IngloTiersCog(commands.Cog):
             await interaction.response.send_message("No profile found. Use /ign or request a tier test first.", ephemeral=True)
             return
         best, mode = best_tier(player.get("tiers", {}))
-        e = discord.Embed(title=f"IngloTiers • {player.get('username', target.display_name)}",
+        e = discord.Embed(title=f"PvPClubTiers • {player.get('username', target.display_name)}",
                           description=f"Best tier: **{best or 'Unranked'}**" + (f" in **{mode}**" if mode else ""),
                           colour=COLOURS.get(best, 0x55DDEB))
         wins = int(player.get("wins", 0))
@@ -891,13 +902,13 @@ class IngloTiersCog(commands.Cog):
         if not rows:
             await interaction.response.send_message("No players have been tiered yet.", ephemeral=True)
             return
-        e = discord.Embed(title=f"🏆 IngloTiers • {mode or 'Overall'} leaderboard",
+        e = discord.Embed(title=f"🏆 PvPClubTiers • {mode or 'Overall'} leaderboard",
                           description="\n".join(f"**{i}.** {r['username']} — **{r['display_tier']}**" +
                           (f" · {r['best_mode']}" if not mode and r.get("best_mode") else "")
                           for i, r in enumerate(rows, 1)), colour=0x55DDEB)
         await interaction.response.send_message(embed=e)
 
-    @app_commands.command(name="tier-rank", description="Show a player's overall IngloTiers position.")
+    @app_commands.command(name="tier-rank", description="Show a player's overall PvPClubTiers position.")
     @app_commands.guild_only()
     async def tier_rank(self, interaction, member: discord.Member | None = None):
         if not await self.require_db(interaction):
@@ -912,7 +923,7 @@ class IngloTiersCog(commands.Cog):
         else:
             await interaction.response.send_message(f"{target.mention} is not ranked yet.")
 
-    @app_commands.command(name="top", description="Show the top ten IngloTiers players.")
+    @app_commands.command(name="top", description="Show the top ten PvPClubTiers players.")
     @app_commands.guild_only()
     async def top(self, interaction):
         if not await self.require_db(interaction):
@@ -923,7 +934,7 @@ class IngloTiersCog(commands.Cog):
             return
         await interaction.response.send_message("\n".join(f"**{i}.** {r['username']} — **{r['best_tier']}**" for i, r in enumerate(rows, 1)))
 
-    @app_commands.command(name="search", description="Search IngloTiers profiles by Minecraft username.")
+    @app_commands.command(name="search", description="Search PvPClubTiers profiles by Minecraft username.")
     @app_commands.guild_only()
     async def search(self, interaction, username: str):
         if not await self.require_db(interaction):
@@ -938,7 +949,7 @@ class IngloTiersCog(commands.Cog):
         for p in docs:
             best, mode = best_tier(p.get("tiers", {}))
             lines.append(f"**{p.get('username')}** — {best or 'Unranked'}" + (f" ({mode})" if mode else ""))
-        await interaction.response.send_message(embed=discord.Embed(title="IngloTiers search", description="\n".join(lines), colour=0x55DDEB))
+        await interaction.response.send_message(embed=discord.Embed(title="PvPClubTiers search", description="\n".join(lines), colour=0x55DDEB))
 
     @app_commands.command(name="compare", description="Compare the gamemode tiers of two players.")
     @app_commands.guild_only()
@@ -948,7 +959,7 @@ class IngloTiersCog(commands.Cog):
         a = await self.get_player(interaction.guild.id, first.id)
         b = await self.get_player(interaction.guild.id, second.id)
         if not a or not b:
-            await interaction.response.send_message("Both players need an IngloTiers profile first.", ephemeral=True)
+            await interaction.response.send_message("Both players need an PvPClubTiers profile first.", ephemeral=True)
             return
         lines = []
         for m in GAMEMODES:
@@ -973,7 +984,7 @@ class IngloTiersCog(commands.Cog):
         lines = [f"**{r['gamemode']}**: {r['old_tier']} → **{r['new_tier']}** · <t:{int(r['created_at'].timestamp())}:R>" for r in rows]
         await interaction.response.send_message(embed=discord.Embed(title=f"{target.display_name} • Tier history", description="\n".join(lines), colour=0x55DDEB))
 
-    @app_commands.command(name="recent", description="Show the latest IngloTiers tier changes.")
+    @app_commands.command(name="recent", description="Show the latest PvPClubTiers tier changes.")
     @app_commands.guild_only()
     async def recent(self, interaction):
         if not await self.require_db(interaction):
@@ -1006,7 +1017,7 @@ class IngloTiersCog(commands.Cog):
         row = await self.db_call(self.tester_stats.find_one, {"guild_id": interaction.guild.id, "tester_id": target.id})
         await interaction.response.send_message(f"🧪 {target.display_name} has completed **{(row or {}).get('tests_completed', 0)}** test(s).")
 
-    @app_commands.command(name="testerboard", description="Show the most active IngloTiers testers.")
+    @app_commands.command(name="testerboard", description="Show the most active PvPClubTiers testers.")
     @app_commands.guild_only()
     async def testerboard(self, interaction):
         if not await self.require_db(interaction):
@@ -1016,7 +1027,7 @@ class IngloTiersCog(commands.Cog):
             await interaction.response.send_message("No tester results recorded yet.", ephemeral=True)
             return
         lines = [f"**{i}.** {r.get('tester_name', 'Tester')} — **{r.get('tests_completed', 0)}** tests" for i, r in enumerate(rows, 1)]
-        await interaction.response.send_message(embed=discord.Embed(title="IngloTiers tester leaderboard", description="\n".join(lines), colour=0x55DDEB))
+        await interaction.response.send_message(embed=discord.Embed(title="PvPClubTiers tester leaderboard", description="\n".join(lines), colour=0x55DDEB))
 
     @app_commands.command(name="tier-adjust", description="Staff: adjust a player's tier with an audit reason.")
     @app_commands.guild_only()
@@ -1053,7 +1064,7 @@ class IngloTiersCog(commands.Cog):
             return
         player = await self.get_player(interaction.guild.id, member.id)
         if not player:
-            await interaction.response.send_message("This member has no IngloTiers profile yet.", ephemeral=True)
+            await interaction.response.send_message("This member has no PvPClubTiers profile yet.", ephemeral=True)
             return
         tiers = player.get("tiers", {}) or {}
         invalid = [mode for mode, tier in tiers.items() if mode not in GAMEMODES or tier not in TIERS]
@@ -1096,7 +1107,7 @@ class IngloTiersCog(commands.Cog):
             bar = "█" * min(12, round(count / max(1, ranked) * 12))
             lines.append(f"{tier:<3}  {count:>4}  {bar or '·'}")
         embed = discord.Embed(
-            title=f"IngloTiers distribution • {gamemode.value}",
+            title=f"PvPClubTiers distribution • {gamemode.value}",
             description="\n".join(lines),
             colour=0x55DDEB,
         )
@@ -1159,11 +1170,11 @@ class IngloTiersCog(commands.Cog):
             for index, row in enumerate(rows, 1)
         ]
         await interaction.response.send_message(embed=discord.Embed(
-            title="⚔️ IngloTiers ELO leaderboard",
+            title="⚔️ PvPClubTiers ELO leaderboard",
             description="\n".join(lines), colour=0x55DDEB
         ))
 
-    @app_commands.command(name="tierban", description="Block a member from requesting IngloTiers tests.")
+    @app_commands.command(name="tierban", description="Block a member from requesting PvPClubTiers tests.")
     @app_commands.guild_only()
     @app_commands.checks.has_permissions(manage_guild=True)
     async def tierban(self, interaction, member: discord.Member, reason: str = "No reason supplied"):
@@ -1173,7 +1184,7 @@ class IngloTiersCog(commands.Cog):
                            {"$set": {"tier_banned": True, "tier_ban_reason": reason[:300]}}, upsert=True)
         await interaction.response.send_message(f"{member.mention} is blocked from tier tests.", ephemeral=True)
 
-    @app_commands.command(name="tierunban", description="Allow a member to request IngloTiers tests again.")
+    @app_commands.command(name="tierunban", description="Allow a member to request PvPClubTiers tests again.")
     @app_commands.guild_only()
     @app_commands.checks.has_permissions(manage_guild=True)
     async def tierunban(self, interaction, member: discord.Member):
@@ -1197,7 +1208,7 @@ class IngloTiersCog(commands.Cog):
             if ping_role is None:
                 ping_role = await guild.create_role(
                     name="Matchmaking Ping", colour=discord.Colour(0x55DDEB),
-                    mentionable=True, reason="IngloTiers matchmaking notifications",
+                    mentionable=True, reason="PvPClubTiers matchmaking notifications",
                 )
             elif not ping_role.mentionable:
                 await ping_role.edit(mentionable=True, reason="Enable matchmaking role mentions")
@@ -1218,7 +1229,7 @@ class IngloTiersCog(commands.Cog):
             ),
             colour=0x55DDEB,
         )
-        panel.set_footer(text="IngloTiers • Matchmaking")
+        panel.set_footer(text="PvPClubTiers • Matchmaking")
         message = None
         message_id = config.get("matchmaking_panel_message_id")
         if message_id:
@@ -1236,7 +1247,7 @@ class IngloTiersCog(commands.Cog):
         # Pin the persistent guide so it remains easy to find while queue posts arrive.
         if not message.pinned:
             try:
-                await message.pin(reason="Keep the IngloTiers matchmaking instructions easy to find")
+                await message.pin(reason="Keep the PvPClubTiers matchmaking instructions easy to find")
             except discord.Forbidden:
                 log.warning("Cannot pin the matchmaking panel in %s; grant Manage Messages to the bot.", channel.id)
 
@@ -1984,7 +1995,7 @@ class IngloTiersCog(commands.Cog):
     async def close_command(self, interaction):
         await self.ticket_action(interaction, "close")
 
-    @app_commands.command(name="skillissue", description="A harmless IngloTiers PvP roast.")
+    @app_commands.command(name="skillissue", description="A harmless PvPClubTiers PvP roast.")
     async def skillissue(self, interaction, member: discord.Member | None = None):
         who = member or interaction.user
         await interaction.response.send_message(random.choice([
@@ -2028,7 +2039,7 @@ class IngloTiersCog(commands.Cog):
             await ctx.reply("Add MONGO_URI to Render Environment and restart the bot first.")
             return
         try:
-            category = await self.find_category(ctx.guild, "INGLOTIERS")
+            category = await self.find_category(ctx.guild, "PVPCLUBTIERS")
             channel = await self.find_channel(ctx.guild, "trivia", category)
             await self.db_call(self.settings.update_one, {"guild_id": ctx.guild.id}, {"$set": {
                 "guild_id": ctx.guild.id, "trivia_channel_id": channel.id,
@@ -2051,7 +2062,7 @@ class IngloTiersCog(commands.Cog):
         await self.db_call(self.settings.update_one, {"guild_id": ctx.guild.id}, {"$set": {"trivia_enabled": False}})
         await ctx.reply("Trivia is paused. Run ?triviasetup to start it again.")
 
-    @app_commands.command(name="trivia-leaderboard", description="Show the IngloTiers trivia leaderboard.")
+    @app_commands.command(name="trivia-leaderboard", description="Show the PvPClubTiers trivia leaderboard.")
     @app_commands.guild_only()
     async def trivia_leaderboard(self, interaction):
         if not await self.require_db(interaction):
@@ -2124,7 +2135,7 @@ class IngloTiersCog(commands.Cog):
                            "opened_at": datetime.now(timezone.utc), "solved_at": None}
                 await self.db_call(self.settings.update_one, {"guild_id": config["guild_id"]},
                     {"$set": {"current_trivia": current, "trivia_next_at": now + TRIVIA_INTERVAL}})
-                e = discord.Embed(title="🧠 IngloTiers Trivia", description=prompt, colour=0x55DDEB)
+                e = discord.Embed(title="🧠 PvPClubTiers Trivia", description=prompt, colour=0x55DDEB)
                 e.set_footer(text="You have 20 minutes • Type your answer in this channel • Correct answer = 1 point")
                 await channel.send(embed=e)
         except Exception:
@@ -2359,4 +2370,4 @@ class IngloTiersCog(commands.Cog):
 
 
 async def setup(bot):
-    await bot.add_cog(IngloTiersCog(bot))
+    await bot.add_cog(PvPClubTiersCog(bot))
