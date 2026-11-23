@@ -1232,6 +1232,12 @@ class IngloTiersCog(commands.Cog):
             await self.db_call(self.settings.update_one, {"guild_id": guild.id}, {
                 "$set": {"matchmaking_panel_message_id": message.id}
             })
+        # Pin the persistent guide so it remains easy to find while queue posts arrive.
+        if not message.pinned:
+            try:
+                await message.pin(reason="Keep the IngloTiers matchmaking instructions easy to find")
+            except discord.Forbidden:
+                log.warning("Cannot pin the matchmaking panel in %s; grant Manage Messages to the bot.", channel.id)
 
     @commands.Cog.listener()
     async def on_ready(self):
