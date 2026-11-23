@@ -108,7 +108,8 @@ def move_tier(tier: str | None, direction: int) -> str | None:
     return TIERS[max(0, min(len(TIERS) - 1, index + direction))]
 
 
-DUEL_TIER_ORDER = ["LT5", "LT4", "LT3", "LT2", "LT1", "HT1", "HT2", "HT3", "HT4", "HT5"]
+# TIERS is stored strongest-first, so reverse it for upward progression from weakest to strongest.
+DUEL_TIER_ORDER = list(reversed(TIERS))
 
 
 def move_duel_tier(tier: str | None, steps: int) -> str:
