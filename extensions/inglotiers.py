@@ -1044,6 +1044,19 @@ class IngloTiersCog(commands.Cog):
         if opponent.bot or opponent.id == interaction.user.id:
             await interaction.response.send_message("Choose another human player.", ephemeral=True)
             return
+        active_duel = await self.db_call(self.duels.find_one, {
+            "guild_id": interaction.guild.id,
+            "status": {"$in": ["pending", "active", "disputed"]},
+            "$or": [
+                {"challenger_id": interaction.user.id}, {"opponent_id": interaction.user.id},
+                {"challenger_id": opponent.id}, {"opponent_id": opponent.id},
+            ],
+        })
+        if active_duel:
+            await interaction.response.send_message(
+                "One of these players already has an unfinished duel.", ephemeral=True
+            )
+            return
         duel_id = uuid4().hex[:10]
         await self.db_call(self.duels.insert_one, {
             "duel_id": duel_id, "guild_id": interaction.guild.id, "challenger_id": interaction.user.id,
@@ -1097,8 +1110,18 @@ class IngloTiersCog(commands.Cog):
         loser_id = duel["opponent_id"] if winner_id == duel["challenger_id"] else duel["challenger_id"]
         winner = interaction.guild.get_member(winner_id) or await interaction.guild.fetch_member(winner_id)
         loser = interaction.guild.get_member(loser_id) or await interaction.guild.fetch_member(loser_id)
-        for member, direction in ((winner, -1), (loser, 1)):
-            player = await self.get_or_create_player(interaction.guild.id, member)
+        winner_player = await self.get_or_create_player(interaction.guild.id, winner)
+        loser_player = await self.get_or_create_player(interaction.guild.id, loser)
+        winner_elo = int(winner_player.get("elo", 1000))
+        loser_elo = int(loser_player.get("elo", 1000))
+        expected_winner = 1 / (1 + 10 ** ((loser_elo - winner_elo) / 400))
+        elo_change = max(1, round(32 * (1 - expected_winner)))
+        now = datetime.now(timezone.utc)
+
+        for member, player, direction in (
+            (winner, winner_player, -1),
+            (loser, loser_player, 1),
+        ):
             current = (player.get("tiers") or {}).get(duel["gamemode"])
             changed_tier = move_tier(current, direction)
             if changed_tier:
@@ -1106,17 +1129,32 @@ class IngloTiersCog(commands.Cog):
                     interaction.guild, member, duel["gamemode"], changed_tier,
                     interaction.user, "duel", player.get("username"),
                 )
-            update = {"duels_played": int(player.get("duels_played", 0)) + 1}
-            if member.id == winner_id:
-                update["wins"] = int(player.get("wins", 0)) + 1
-            else:
-                update["losses"] = int(player.get("losses", 0)) + 1
+            is_winner = member.id == winner_id
+            rating = (winner_elo + elo_change) if is_winner else (loser_elo - elo_change)
+            update = {
+                "elo": max(100, rating),
+                "duels_played": int(player.get("duels_played", 0)) + 1,
+                "wins": int(player.get("wins", 0)) + (1 if is_winner else 0),
+                "losses": int(player.get("losses", 0)) + (0 if is_winner else 1),
+                "updated_at": now,
+            }
             await self.db_call(self.players.update_one, {
                 "guild_id": interaction.guild.id, "discord_id": member.id
             }, {"$set": update})
+        await self.db_call(self.activity.insert_one, {
+            "guild_id": interaction.guild.id, "kind": "duel_result",
+            "winner_id": winner_id, "loser_id": loser_id,
+            "winner_ign": winner_player.get("username"), "loser_ign": loser_player.get("username"),
+            "gamemode": duel["gamemode"], "score": f"{first['your']}-{first['opponent']}",
+            "elo_change": elo_change, "created_at": now,
+        })
         await self.db_call(self.duels.update_one, {"duel_id": duel_id}, {"$set": {
             "status": "completed", "winner_id": winner_id, "completed_at": datetime.now(timezone.utc)}})
-        await interaction.response.send_message(f"{winner.mention} won! They move one tier up and {loser.mention} one tier down in {duel['gamemode']}.")
+        await interaction.response.send_message(
+            f"{winner.mention} won **{first['your']}-{first['opponent']}** in {duel['gamemode']}! "
+            f"They gained **{elo_change} ELO** and {loser.mention} lost **{elo_change} ELO**. "
+            "Their gamemode tiers and shared tier roles were recalculated."
+        )
 
     @app_commands.command(name="duel-cancel", description="Cancel one of your pending or active duels.")
     @app_commands.guild_only()
