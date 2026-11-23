@@ -22,8 +22,8 @@ from pymongo.errors import DuplicateKeyError, PyMongoError
 log = logging.getLogger("pvpclub-empire.pvpclubtiers")
 
 GAMEMODES = [
-    "Vanilla", "Sword", "NethPot", "Pot", "UHC", "Axe", "SMP",
-    "Elytra", "Creeper", "Diamond SMP", "Spear Mace",
+    "Spear Mace", "Sword", "Axe", "UHC", "Elytra",
+    "Creeper", "Diamond SMP", "Mace", "SMP",
 ]
 TIERS = ["HT1", "LT1", "HT2", "LT2", "HT3", "LT3", "HT4", "LT4", "HT5", "LT5"]
 POINTS = {"HT1": 60, "LT1": 45, "HT2": 30, "LT2": 20, "HT3": 10, "LT3": 6, "HT4": 4, "LT4": 3, "HT5": 2, "LT5": 1}
@@ -120,7 +120,12 @@ def move_duel_tier(tier: str | None, steps: int) -> str:
 
 
 def safe_player(player: dict) -> dict:
-    tiers = player.get("tiers", {}) or {}
+    stored_tiers = player.get("tiers", {}) or {}
+    # Only the currently supported nine gamemodes should be exposed to clients.
+    tiers = {
+        mode: tier for mode, tier in stored_tiers.items()
+        if mode in GAMEMODES and tier in TIERS
+    }
     total_points = sum(POINTS.get(tier, 0) for tier in tiers.values())
     return {
         "discordId": str(player.get("discord_id", "")),
@@ -158,11 +163,11 @@ footer{max-width:1180px;margin:auto;padding:20px 22px 35px;color:var(--muted);fo
 </style></head><body><header><div class="brand"><div class="logo">P</div><div><strong>PvPClubTiers</strong><small>EU Minecraft PvP • mcpvp.club</small></div></div><span class="pill">PLAYER RANKINGS</span></header>
 <main><section class="hero"><div class="eyebrow">The community tier list</div><h1>Find your place<br>on the leaderboard.</h1><p>Browse player tiers across every supported gamemode, compare profiles and follow recent tier changes.</p></section>
 <section class="panel"><div class="toolbar"><select id="mode"><option value="">Overall ranking</option></select><input id="search" placeholder="Search Minecraft username…"><button id="searchBtn">Search</button></div>
-<div class="stats"><div class="stat"><small>Ranked players</small><strong id="players">—</strong></div><div class="stat"><small>Gamemodes</small><strong>11</strong></div><div class="stat"><small>Tier levels</small><strong>10</strong></div></div>
+<div class="stats"><div class="stat"><small>Ranked players</small><strong id="players">—</strong></div><div class="stat"><small>Gamemodes</small><strong>9</strong></div><div class="stat"><small>Tier levels</small><strong>10</strong></div></div>
 <div style="overflow-x:auto"><table><thead><tr><th>#</th><th>Player</th><th>Best mode</th><th>Best tier</th></tr></thead><tbody id="rows"><tr><td colspan="4" class="empty">Loading leaderboard…</td></tr></tbody></table></div></section>
 <section class="panel profile" id="profile"><div class="eyebrow">Player profile</div><h2 id="profileName"></h2><div class="muted" id="profileBest"></div><div class="profile-grid" id="profileModes"></div><h3>Recent tier history</h3><div id="profileHistory" class="muted"></div></section></main><footer>PvPClubTiers • EU only • mcpvp.club</footer>
 <script>
-const modes=["Vanilla","Sword","NethPot","Pot","UHC","Axe","SMP","Elytra","Creeper","Diamond SMP","Spear Mace"];const modeSelect=document.getElementById("mode");
+const modes=["Spear Mace","Sword","Axe","UHC","Elytra","Creeper","Diamond SMP","Mace","SMP"];const modeSelect=document.getElementById("mode");
 modes.forEach(m=>{const o=document.createElement("option");o.value=m;o.textContent=m;modeSelect.appendChild(o)});
 function badge(t){const s=document.createElement("span");s.className="tier";s.textContent=t||"Unranked";return s}
 async function load(){const mode=modeSelect.value;const body=document.getElementById("rows");body.innerHTML='<tr><td colspan="4" class="empty">Loading…</td></tr>';try{const r=await fetch("/api/pvpclubtiers/leaderboard"+(mode?"?mode="+encodeURIComponent(mode):""));const x=await r.json();document.getElementById("players").textContent=x.total??0;body.innerHTML="";if(!x.players||!x.players.length){body.innerHTML='<tr><td colspan="4" class="empty">No ranked players yet. Ask staff to set up PvPClubTiers.</td></tr>';return}x.players.forEach((p,i)=>{const tr=document.createElement("tr");const rank=document.createElement("td");rank.textContent=i+1;const name=document.createElement("td");name.className="player";name.textContent=p.username;name.onclick=()=>profile(p.username);const bm=document.createElement("td");bm.textContent=p.best_mode||"—";bm.className="muted";const tier=document.createElement("td");tier.appendChild(badge(mode?(p.tiers||{})[mode]:p.best_tier));tr.append(rank,name,bm,tier);body.appendChild(tr)})}catch(e){body.innerHTML='<tr><td colspan="4" class="empty">Leaderboard is temporarily unavailable.</td></tr>'}}
@@ -722,7 +727,12 @@ class PvPClubTiersCog(commands.Cog):
     async def save_tier(self, guild, member, gamemode, new_tier, tester, source, username=None, reason=None):
         player = await self.get_or_create_player(guild.id, member, username)
         old_tier = (player.get("tiers") or {}).get(gamemode)
-        tiers = dict(player.get("tiers") or {})
+        # Retire legacy gamemodes from active profiles without changing the historical
+        # tier-history collection. Only current supported modes remain on the profile.
+        tiers = {
+            mode: value for mode, value in (player.get("tiers") or {}).items()
+            if mode in GAMEMODES and value in TIERS
+        }
         tiers[gamemode] = new_tier
         cooldowns = dict(player.get("cooldowns") or {})
         if source == "test":
