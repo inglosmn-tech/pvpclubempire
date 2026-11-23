@@ -199,11 +199,12 @@ class LevelingCog(commands.Cog):
         delay = timedelta(minutes=random.randint(15, 45)) if initial else timedelta(hours=random.uniform(3, 6))
         candidate = now + delay
         if candidate.hour < 10:
-            candidate = candidate.replace(hour=10, minute=random.randint(0, 180), second=0, microsecond=0)
+            candidate = candidate.replace(hour=10, minute=0, second=0, microsecond=0)
+            candidate += timedelta(minutes=random.randint(0, 180))
         elif candidate.hour >= 22:
             candidate = (candidate + timedelta(days=1)).replace(
-                hour=10, minute=random.randint(0, 180), second=0, microsecond=0
-            )
+                hour=10, minute=0, second=0, microsecond=0
+            ) + timedelta(minutes=random.randint(0, 180))
         return candidate.timestamp()
 
     def _xp_multiplier(self, member: discord.Member, config: dict) -> float:
@@ -244,11 +245,10 @@ class LevelingCog(commands.Cog):
         if len(self.text_cooldowns) > 2000:
             cutoff = now - 60.0
             self.text_cooldowns = {k: stamp for k, stamp in self.text_cooldowns.items() if stamp >= cutoff}
-        multiplier = self._xp_multiplier(message.author, config)
         event = config.get("deadchat_event") or {}
-        if float(event.get("active_until", 0)) > time.time():
-            multiplier *= 3
-        amount = max(1, int(random.randint(15, 25) * multiplier))
+        deadchat_boost = 3 if float(event.get("active_until", 0)) > time.time() else 1
+        # award_xp applies configured role multipliers once; do not apply them here too.
+        amount = max(1, random.randint(15, 25) * deadchat_boost)
         await self.award_xp(message.author, amount, voice=False)
 
     async def award_xp(self, member: discord.Member, amount: int, *, voice: bool, voice_seconds: int = 0):
