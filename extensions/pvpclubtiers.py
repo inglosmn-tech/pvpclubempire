@@ -1850,6 +1850,7 @@ class PvPClubTiersCog(commands.Cog):
             await interaction.followup.send("I cannot find my server member record.", ephemeral=True)
             return
 
+        ticket_id = uuid4().hex[:10]
         async with self.test_queue_lock:
             entry = await self.db_call(
                 self.test_queue_entries.find_one_and_update,
@@ -1861,6 +1862,7 @@ class PvPClubTiersCog(commands.Cog):
                 {"$set": {
                     "status": "starting",
                     "tester_id": interaction.user.id,
+                    "ticket_id": ticket_id,
                     "starting_at": datetime.now(timezone.utc),
                 }},
                 sort=[("created_at", ASCENDING)],
@@ -1883,6 +1885,8 @@ class PvPClubTiersCog(commands.Cog):
                 {"queue_id": entry["queue_id"], "status": "starting"},
                 {"$set": {
                     "status": "cancelled",
+                    "tester_id": None,
+                    "ticket_id": None,
                     "cancelled_at": datetime.now(timezone.utc),
                     "cancel_reason": "Player left the server before the test started",
                 }},
@@ -1900,13 +1904,13 @@ class PvPClubTiersCog(commands.Cog):
                 {"$set": {
                     "status": "waiting",
                     "tester_id": None,
+                    "ticket_id": None,
                     "starting_at": None,
                 }},
             )
             await interaction.followup.send("You cannot test your own queue entry. Ask another tester to start it.", ephemeral=True)
             return
 
-        ticket_id = uuid4().hex[:10]
         safe_mode = mode_key(gamemode)[:18]
         safe_name = re.sub(r"[^a-z0-9-]+", "-", entry["username"].casefold()).strip("-")[:12] or "player"
         channel_name = f"test-{safe_mode}-{safe_name}"[:90]
