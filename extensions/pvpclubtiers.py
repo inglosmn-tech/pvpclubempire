@@ -1393,7 +1393,7 @@ class PvPClubTiersCog(commands.Cog):
         )
         return channel
 
-    async def ensure_test_request_panel(self, guild: discord.Guild):
+    async def ensure_test_request_panel(self, guild: discord.Guild, *, return_status: bool = False):
         config = await self.setting(guild.id)
         public_category = guild.get_channel(int(config.get("public_category_id", 0) or 0))
         if not isinstance(public_category, discord.CategoryChannel):
@@ -1578,6 +1578,8 @@ class PvPClubTiersCog(commands.Cog):
             },
             upsert=True,
         )
+        if return_status:
+            return channel, panel is not None
         return channel
 
     async def refresh_test_queue_panel(self, guild: discord.Guild):
@@ -1818,14 +1820,16 @@ class PvPClubTiersCog(commands.Cog):
         try:
             await ctx.reply("Refreshing the PvPClubTiers V3 signup and queue panels…")
             queue_channel = await self.ensure_test_queue_panel(ctx.guild)
-            request_channel = await self.ensure_test_request_panel(ctx.guild)
-            if request_channel is None:
+            request_result = await self.ensure_test_request_panel(ctx.guild, return_status=True)
+            if request_result is None:
                 await ctx.send("I couldn't find the PvPClubTiers category. Run `?tiersetup` first.")
                 return
+            request_channel, panel_edited = request_result
+            panel_action = "edited the existing message" if panel_edited else "posted a new message (no old panel was found)"
 
             await ctx.send(
                 "✅ **PvPClubTiers V3 panels updated!**\n"
-                f"• Sign Up panel: {request_channel.mention}\n"
+                f"• Sign Up panel: {request_channel.mention} — {panel_action}\n"
                 f"• Gamemode queues: {queue_channel.mention if queue_channel else 'not created'}\n"
                 "• Existing queue entries and open/closed queue states were preserved."
             )
