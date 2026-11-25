@@ -644,43 +644,6 @@ class TesterQueueControlsView(discord.ui.View):
         await self.cog.start_next_test(interaction, self.selected_gamemode)
 
 
-class TestQueuePanelView(discord.ui.View):
-    def __init__(self, cog):
-        super().__init__(timeout=None)
-        self.cog = cog
-
-    @discord.ui.button(
-        label="Join a Test Queue",
-        style=discord.ButtonStyle.success,
-        emoji="➕",
-        custom_id="inglotiers:test-queue:join",
-    )
-    async def join_queue(self, interaction: discord.Interaction, button: discord.ui.Button):
-        await interaction.response.send_message(
-            "Choose the gamemode you want to join:",
-            view=TestQueueJoinView(self.cog),
-            ephemeral=True,
-        )
-
-    @discord.ui.button(
-        label="Leave Queue",
-        style=discord.ButtonStyle.secondary,
-        emoji="↩️",
-        custom_id="inglotiers:test-queue:leave",
-    )
-    async def leave_queue(self, interaction: discord.Interaction, button: discord.ui.Button):
-        await self.cog.leave_test_queue(interaction)
-
-    @discord.ui.button(
-        label="Tester Controls",
-        style=discord.ButtonStyle.primary,
-        emoji="🛠️",
-        custom_id="inglotiers:test-queue:tester",
-    )
-    async def tester_controls(self, interaction: discord.Interaction, button: discord.ui.Button):
-        await self.cog.show_tester_queue_controls(interaction)
-
-
 class QueueTestSessionView(discord.ui.View):
     def __init__(self, cog):
         super().__init__(timeout=None)
@@ -989,6 +952,33 @@ class PvPClubTiersCog(commands.Cog):
         expected_name = f"{gamemode} Tester".casefold()
         return any(role.name.casefold() == expected_name for role in member.roles)
 
+    async def has_gamemode_tester_role(
+        self,
+        member: discord.Member,
+        gamemode: str,
+        *,
+        config: dict | None = None,
+    ) -> bool:
+        """Check the actual gamemode Tester role; staff permissions are not a bypass."""
+        if gamemode not in GAMEMODES:
+            return False
+        if config is None:
+            config = await self.setting(member.guild.id)
+
+        role_id = (config.get("tester_roles") or {}).get(gamemode)
+        if role_id:
+            try:
+                configured_role_id = int(role_id)
+            except (TypeError, ValueError):
+                configured_role_id = None
+            if configured_role_id and any(role.id == configured_role_id for role in member.roles):
+                return True
+
+        # Keep compatibility with an existing tester role if its saved ID is
+        # missing, while still requiring the gamemode-specific Tester role.
+        expected_name = f"{gamemode} Tester".casefold()
+        return any(role.name.casefold() == expected_name for role in member.roles)
+
     async def find_category(self, guild: discord.Guild, name: str):
         wanted = plain_discord_name(name)
         category = next(
@@ -1252,10 +1242,9 @@ class PvPClubTiersCog(commands.Cog):
             status_line = "🟢 **Open.** A tester has opened this queue and is accepting players."
             colour = 0x57D69A
         else:
-            status_line = (
-                "🔴 **Closed.** No tester is accepting players right now. "
-                f"{count} on the waitlist · you'll be pinged when it opens."
-            )
+            status_line = "🔴 **Closed.** You cannot join while this queue is closed."
+            if count:
+                status_line += f" {count} player(s) already waiting will be notified when it reopens."
             colour = 0x747B8C
 
         embed = discord.Embed(
@@ -1266,7 +1255,7 @@ class PvPClubTiersCog(commands.Cog):
             ),
             colour=colour,
         )
-        embed.set_footer(text="Join while closed to reserve your place • Leave any time before your test starts")
+        embed.set_footer(text="Join only while open • Leave any time before your test starts")
         return embed
 
     async def ensure_test_queue_panel(self, guild: discord.Guild):
@@ -1507,10 +1496,10 @@ class PvPClubTiersCog(commands.Cog):
         embed = discord.Embed(
             title="📥 Request a tier test",
             description=(
-                "Enter your Minecraft IGN once, then choose any gamemodes you want to join. "
-                "You can be on multiple waitlists at the same time.\n\n"
-                "When a tester opens a gamemode queue, the players waiting for that mode are pinged. "
-                "When your turn arrives, the bot opens a private session for you and the assigned tester."
+                "Enter your Minecraft IGN once, then choose the gamemode queues that are currently open. "
+                "You can join multiple open queues at the same time.\n\n"
+                "You cannot join a closed queue. When a tester opens a gamemode queue, its waiting players "
+                "are notified. When your turn arrives, the bot opens a private session for you and the assigned tester."
             ),
             colour=0x55DDEB,
         )
@@ -1518,7 +1507,7 @@ class PvPClubTiersCog(commands.Cog):
             name="How it works",
             value=(
                 "1. Set your IGN.\n"
-                "2. Select one or more gamemodes.\n"
+                "2. Select one or more **open** gamemodes.\n"
                 "3. Check **My waitlists** or leave all queues whenever you need."
             ),
             inline=False,
@@ -2340,15 +2329,10 @@ class PvPClubTiersCog(commands.Cog):
             await interaction.followup.send("Use this control inside the server.", ephemeral=True)
             return
         config = await self.setting(interaction.guild.id)
-        role_ids = config.get("tester_roles") or {}
-        if interaction.user.guild_permissions.manage_guild or interaction.user.guild_permissions.administrator:
-            allowed_modes = list(GAMEMODES)
-        else:
-            member_role_ids = {role.id for role in interaction.user.roles}
-            allowed_modes = [
-                mode for mode in GAMEMODES
-                if role_ids.get(mode) and int(role_ids[mode]) in member_role_ids
-            ]
+        allowed_modes = [
+            mode for mode in GAMEMODES
+            if await self.has_gamemode_tester_role(interaction.user, mode, config=config)
+        ]
         if not allowed_modes:
             await interaction.followup.send(
                 "You need a gamemode Tester role to manage test queues.",
@@ -2370,6 +2354,15 @@ class PvPClubTiersCog(commands.Cog):
     ) -> tuple[bool, str]:
         if gamemode not in GAMEMODES:
             return False, "That gamemode is not supported."
+
+        config = await self.setting(guild.id)
+        mode_config = (config.get("test_queue_modes") or {}).get(mode_key(gamemode), {})
+        if not mode_config.get("open", False):
+            return False, (
+                f"The **{gamemode}** queue is closed. "
+                "You can only join after a tester opens it."
+            )
+
         try:
             username = clean_username(username)
         except ValueError as exc:
@@ -2638,23 +2631,40 @@ class PvPClubTiersCog(commands.Cog):
         if not await self.require_db(interaction):
             return
         await interaction.response.defer(ephemeral=True, thinking=True)
-        if not isinstance(interaction.user, discord.Member) or not await self.staff_or_tester(interaction.user, gamemode):
+        if gamemode not in GAMEMODES:
+            await interaction.followup.send("That gamemode is not supported.", ephemeral=True)
+            return
+        if not isinstance(interaction.user, discord.Member):
+            await interaction.followup.send("Use tester controls inside the server.", ephemeral=True)
+            return
+
+        # Queue joins use this same lock, so a player cannot slip into a queue
+        # at the same time a tester closes it.
+        async with self.test_queue_lock:
+            config = await self.setting(interaction.guild.id)
+            if not await self.has_gamemode_tester_role(interaction.user, gamemode, config=config):
+                authorised = False
+                now_open = False
+            else:
+                authorised = True
+                key = mode_key(gamemode)
+                modes = config.get("test_queue_modes") or {}
+                currently_open = bool((modes.get(key) or {}).get("open", False))
+                now_open = not currently_open
+                await self.db_call(
+                    self.settings.update_one,
+                    {"guild_id": interaction.guild.id},
+                    {"$set": {f"test_queue_modes.{key}.open": now_open}},
+                    upsert=True,
+                )
+
+        if not authorised:
             await interaction.followup.send(
-                f"Only a {gamemode} Tester or server staff can manage this queue.",
+                f"Only a member with the **{gamemode} Tester** role can open or close this queue.",
                 ephemeral=True,
             )
             return
-        config = await self.setting(interaction.guild.id)
-        key = mode_key(gamemode)
-        modes = config.get("test_queue_modes") or {}
-        currently_open = bool((modes.get(key) or {}).get("open", False))
-        now_open = not currently_open
-        await self.db_call(
-            self.settings.update_one,
-            {"guild_id": interaction.guild.id},
-            {"$set": {f"test_queue_modes.{key}.open": now_open}},
-            upsert=True,
-        )
+
         await self.refresh_test_queue_panel(interaction.guild)
         if now_open:
             waiting = await self.db_call(
