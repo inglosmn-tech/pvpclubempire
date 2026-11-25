@@ -2567,22 +2567,56 @@ class PvPClubTiersCog(commands.Cog):
             return
 
         ticket_id = uuid4().hex[:10]
+        entry = None
         async with self.test_queue_lock:
-            entry = await self.db_call(
-                self.test_queue_entries.find_one_and_update,
-                {
-                    "guild_id": guild.id,
-                    "gamemode": gamemode,
-                    "status": "waiting",
-                },
-                {"$set": {
-                    "status": "starting",
-                    "tester_id": interaction.user.id,
-                    "ticket_id": ticket_id,
-                    "starting_at": datetime.now(timezone.utc),
-                }},
-                sort=[("created_at", ASCENDING)],
-            )
+            # A player may join several waitlists, but can only be tested in one
+            # session at a time. Skip their other entries if one session is
+            # already being opened or tested.
+            while True:
+                candidates = await self.db_call(
+                    lambda: list(self.test_queue_entries.find({
+                        "guild_id": guild.id,
+                        "gamemode": gamemode,
+                        "status": "waiting",
+                    }).sort("created_at", ASCENDING).limit(QUEUE_CAPACITY))
+                )
+                if not candidates:
+                    break
+
+                candidate = candidates[0]
+                active_for_player = await self.db_call(
+                    self.test_queue_entries.find_one,
+                    {
+                        "guild_id": guild.id,
+                        "discord_id": int(candidate["discord_id"]),
+                        "status": {"$in": ["starting", "testing"]},
+                    },
+                )
+                if active_for_player:
+                    await self.db_call(
+                        self.test_queue_entries.update_one,
+                        {"queue_id": candidate["queue_id"], "status": "waiting"},
+                        {"$set": {
+                            "status": "cancelled",
+                            "cancelled_at": datetime.now(timezone.utc),
+                            "cancel_reason": "Player already has another active test session",
+                        }},
+                    )
+                    continue
+
+                reserved = await self.db_call(
+                    self.test_queue_entries.update_one,
+                    {"queue_id": candidate["queue_id"], "status": "waiting"},
+                    {"$set": {
+                        "status": "starting",
+                        "tester_id": interaction.user.id,
+                        "ticket_id": ticket_id,
+                        "starting_at": datetime.now(timezone.utc),
+                    }},
+                )
+                if reserved.modified_count:
+                    entry = candidate
+                    break
         if not entry:
             await interaction.followup.send(f"There are no players waiting in the {gamemode} queue.", ephemeral=True)
             await self.refresh_test_queue_panel(guild)
@@ -2734,6 +2768,22 @@ class PvPClubTiersCog(commands.Cog):
                     "tester_id": interaction.user.id,
                     "created_at": datetime.now(timezone.utc),
                 },
+            )
+            # A member can be on several waitlists, but once a test is
+            # successfully opened their other waiting entries are no longer
+            # needed. Leave them untouched if session creation fails.
+            await self.db_call(
+                self.test_queue_entries.update_many,
+                {
+                    "guild_id": guild.id,
+                    "discord_id": player.id,
+                    "status": "waiting",
+                },
+                {"$set": {
+                    "status": "cancelled",
+                    "cancelled_at": datetime.now(timezone.utc),
+                    "cancel_reason": "Another gamemode test session has started",
+                }},
             )
         except Exception:
             log.exception("Could not open private queue test session for %s", entry.get("username"))
