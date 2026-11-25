@@ -1057,7 +1057,7 @@ class PvPClubTiersCog(commands.Cog):
         if reset_queue_state:
             await self.db_call(
                 self.test_queue_entries.update_many,
-                {"guild_id": guild.id, "status": {"$in": ["waiting", "starting"]}},
+                {"guild_id": guild.id, "status": "waiting"},
                 {"$set": {
                     "status": "cancelled",
                     "cancelled_at": datetime.now(timezone.utc),
