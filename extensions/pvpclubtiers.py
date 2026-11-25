@@ -473,16 +473,17 @@ class TestQueueJoinModal(discord.ui.Modal):
 
 
 class TestQueueJoinModesSelect(discord.ui.Select):
-    def __init__(self, cog, username: str):
+    def __init__(self, cog, username: str, allowed_modes: list[str]):
         self.cog = cog
         self.username = username
+        self.allowed_modes = allowed_modes
         super().__init__(
-            placeholder="Choose one or more gamemodes…",
+            placeholder="Choose one or more open gamemodes…",
             min_values=1,
-            max_values=len(GAMEMODES),
+            max_values=len(allowed_modes),
             options=[
                 discord.SelectOption(label=mode, value=mode, emoji=MODE_EMOJIS.get(mode))
-                for mode in GAMEMODES
+                for mode in allowed_modes
             ],
             custom_id="inglotiers:test-queue:join-multiple-modes",
         )
@@ -492,9 +493,9 @@ class TestQueueJoinModesSelect(discord.ui.Select):
 
 
 class TestQueueJoinModesView(discord.ui.View):
-    def __init__(self, cog, username: str):
+    def __init__(self, cog, username: str, allowed_modes: list[str]):
         super().__init__(timeout=180)
-        self.add_item(TestQueueJoinModesSelect(cog, username))
+        self.add_item(TestQueueJoinModesSelect(cog, username, allowed_modes))
 
 
 class GamemodeTestQueueView(discord.ui.View):
@@ -569,10 +570,18 @@ class TestQueuePanelView(discord.ui.View):
         username = (player or {}).get("username")
         if username and re.fullmatch(r"[A-Za-z0-9_]{3,16}", str(username)):
             await interaction.response.send_message(
-                f"Your saved Minecraft IGN is **{username}**. Choose one or more gamemodes:",
-                view=TestQueueJoinModesView(self.cog, str(username)),
-                ephemeral=True,
-            )
+                open_modes = await self.cog.open_test_queue_modes(interaction.guild)
+                if not open_modes:
+                    await interaction.response.send_message(
+                        "No test queues are open right now. You can join as soon as a tester opens one.",
+                        ephemeral=True,
+                    )
+                    return
+                await interaction.response.send_message(
+                    f"Your saved Minecraft IGN is **{username}**. Choose one or more open gamemodes:",
+                    view=TestQueueJoinModesView(self.cog, str(username), open_modes),
+                    ephemeral=True,
+                )
             return
 
         await interaction.response.send_modal(TestQueueJoinModal(self.cog))
@@ -1226,6 +1235,15 @@ class PvPClubTiersCog(commands.Cog):
         embed.add_field(name="Duel ELO", value=str(player.get("elo", 1000)), inline=True)
         embed.set_thumbnail(url=interaction.user.display_avatar.url)
         await interaction.followup.send(embed=embed, ephemeral=True)
+
+    async def open_test_queue_modes(self, guild: discord.Guild) -> list[str]:
+        """Return only gamemodes whose test queues are currently open."""
+        config = await self.setting(guild.id)
+        queue_modes = config.get("test_queue_modes") or {}
+        return [
+            mode for mode in GAMEMODES
+            if (queue_modes.get(mode_key(mode)) or {}).get("open", False)
+        ]
 
     async def build_test_queue_embed(self, guild: discord.Guild, gamemode: str) -> discord.Embed:
         config = await self.setting(guild.id)
@@ -2465,10 +2483,19 @@ class PvPClubTiersCog(commands.Cog):
             await interaction.followup.send("I couldn't save your IGN. Please try again or contact staff.", ephemeral=True)
             return
 
+        open_modes = await self.open_test_queue_modes(interaction.guild)
+        if not open_modes:
+            await interaction.followup.send(
+                f"✅ Saved your Minecraft IGN as **{username}**. No test queues are open right now; "
+                "you can join when a tester opens one.",
+                ephemeral=True,
+            )
+            return
+
         await interaction.followup.send(
             f"✅ Saved your Minecraft IGN as **{username}**.\n"
-            "Choose one or more gamemodes below. You only need to enter your IGN once.",
-            view=TestQueueJoinModesView(self, username),
+            "Choose one or more open gamemodes below. You only need to enter your IGN once.",
+            view=TestQueueJoinModesView(self, username, open_modes),
             ephemeral=True,
         )
 
@@ -2510,6 +2537,17 @@ class PvPClubTiersCog(commands.Cog):
             return
         if not isinstance(interaction.user, discord.Member):
             await interaction.response.send_message("Use this queue inside the server.", ephemeral=True)
+            return
+        if gamemode not in GAMEMODES:
+            await interaction.response.send_message("That gamemode is not supported.", ephemeral=True)
+            return
+        config = await self.setting(interaction.guild.id)
+        mode_config = (config.get("test_queue_modes") or {}).get(mode_key(gamemode), {})
+        if not mode_config.get("open", False):
+            await interaction.response.send_message(
+                f"The **{gamemode}** queue is closed. You can join after a tester opens it.",
+                ephemeral=True,
+            )
             return
         player = await self.get_player(interaction.guild.id, interaction.user.id)
         username = (player or {}).get("username")
