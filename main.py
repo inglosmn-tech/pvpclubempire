@@ -2212,6 +2212,130 @@ async def petcat(interaction: discord.Interaction, action: app_commands.Choice[s
 
 
 # ---------------------------------------------------------------------------
+# CHANNEL NAMING STYLE
+# ---------------------------------------------------------------------------
+
+def strip_channel_style(name: str) -> str:
+    value = name.strip()
+    value = re.sub(r"^『[^』]*』\s*", "", value)
+    value = re.sub(r"^[^│|]+[│|]\s*", "", value)
+    value = re.sub(r"^[^a-zA-Z0-9]+", "", value)
+    return value.strip()
+
+
+def channel_style_emoji(name: str) -> str:
+    value = strip_channel_style(name).casefold().replace("_", "-")
+    rules = [
+        (("welcome",), "🎉"),
+        (("rule",), "📝"),
+        (("announcement", "news"), "🔔"),
+        (("event",), "🪩"),
+        (("open-a-ticket", "ticket"), "🎫"),
+        (("level-up", "level"), "⭐"),
+        (("general", "chat"), "💬"),
+        (("bot-command", "command"), "🤖"),
+        (("suggest", "idea"), "💡"),
+        (("trivia", "quiz"), "❓"),
+        (("queue",), "🎮"),
+        (("request-test", "request"), "📥"),
+        (("result",), "✅"),
+        (("tier-activity", "activity"), "📈"),
+        (("matchmaking", "duel"), "⚔️"),
+        (("tier-info", "info"), "📜"),
+        (("leaderboard", "rank"), "📊"),
+        (("tester", "application"), "🧪"),
+        (("ticket-log", "mod-log", "server-log", "log"), "📁"),
+        (("support", "help"), "🆘"),
+        (("voice", "gaming", "lounge"), "🔊"),
+        (("media", "clip", "screenshot"), "📸"),
+        (("music",), "🎵"),
+    ]
+    for keywords, emoji in rules:
+        if any(keyword in value for keyword in keywords):
+            return emoji
+    return "✨"
+
+
+def category_style_emoji(name: str) -> str:
+    value = strip_channel_style(name).casefold()
+    rules = [
+        (("info", "help", "welcome"), "👾"),
+        (("general", "community"), "💬"),
+        (("pvpclubtiers", "tier", "testing"), "⚔️"),
+        (("ticket", "support"), "🎫"),
+        (("log", "staff", "moderation"), "🛡️"),
+        (("queue", "matchmaking"), "🎮"),
+        (("voice", "lounge"), "🔊"),
+    ]
+    for keywords, emoji in rules:
+        if any(keyword in value for keyword in keywords):
+            return emoji
+    return "📂"
+
+
+@bot.command(name="v1")
+@commands.guild_only()
+@commands.has_guild_permissions(manage_guild=True)
+async def channel_style_v1(ctx: commands.Context):
+    """Apply the server's decorative category and channel naming style."""
+    guild = ctx.guild
+    bot_member = guild.me
+    if bot_member is None or not bot_member.guild_permissions.manage_channels:
+        await ctx.reply("I need Manage Channels to rename the server channels.", mention_author=False)
+        return
+
+    await ctx.reply("Applying the channel naming style…", mention_author=False)
+    renamed = 0
+    already_styled = 0
+    failed = 0
+
+    # Categories use: emoji│CATEGORY NAME
+    # Channels use: 『emoji』 channel-name
+    for item in list(guild.channels):
+        try:
+            if isinstance(item, discord.CategoryChannel):
+                if re.match(r"^.{1,8}│", item.name):
+                    already_styled += 1
+                    continue
+                base = strip_channel_style(item.name)
+                if not base:
+                    continue
+                new_name = f"{category_style_emoji(base)}│{base.upper()}"[:100]
+            else:
+                if re.match(r"^『[^』]+』\s+", item.name):
+                    already_styled += 1
+                    continue
+                base = strip_channel_style(item.name)
+                if not base:
+                    continue
+                new_name = f"『{channel_style_emoji(base)}』 {base}"[:100]
+
+            if new_name != item.name:
+                await item.edit(name=new_name, reason=f"Server channel naming style applied by {ctx.author}")
+                renamed += 1
+        except (discord.Forbidden, discord.HTTPException):
+            failed += 1
+            log.exception("Could not apply v1 channel style to channel %s in guild %s", item.id, guild.id)
+
+    await ctx.send(
+        "✅ **Channel style applied.**\n"
+        f"• Renamed: **{renamed}**\n"
+        f"• Already styled: **{already_styled}**\n"
+        f"• Could not rename: **{failed}**"
+        + ("\nGive me Manage Channels and try again for the remaining channels." if failed else "")
+    )
+
+
+@channel_style_v1.error
+async def channel_style_v1_error(ctx: commands.Context, error: commands.CommandError):
+    if isinstance(error, commands.MissingPermissions):
+        await ctx.reply("You need Manage Server to run ?v1.", mention_author=False)
+    else:
+        log.exception("?v1 failed", exc_info=error)
+        await ctx.reply("I couldn't apply the naming style. Check my permissions and try again.", mention_author=False)
+
+
+# ---------------------------------------------------------------------------
 # TICKETS
 # ---------------------------------------------------------------------------
 
