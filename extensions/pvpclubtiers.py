@@ -501,16 +501,19 @@ class TestQueueJoinModesView(discord.ui.View):
 class GamemodeTestQueueView(discord.ui.View):
     """Persistent Join/Leave buttons attached to one gamemode's queue card."""
 
-    def __init__(self, cog, gamemode: str):
+    def __init__(self, cog, gamemode: str, *, is_open: bool = True):
         super().__init__(timeout=None)
         self.cog = cog
         self.gamemode = gamemode
         key = mode_key(gamemode)
 
+        # Closed queues are visibly disabled on the public queue card. The
+        # server-side join guard remains in place as the final safety check.
         join = discord.ui.Button(
-            label="Join queue",
-            style=discord.ButtonStyle.success,
-            emoji="✅",
+            label="Join queue" if is_open else "Queue closed",
+            style=discord.ButtonStyle.success if is_open else discord.ButtonStyle.secondary,
+            emoji="✅" if is_open else "🔒",
+            disabled=not is_open,
             custom_id=f"inglotiers:test-queue:join:{key}",
             row=0,
         )
@@ -1368,7 +1371,9 @@ class PvPClubTiersCog(commands.Cog):
                 except (discord.NotFound, discord.Forbidden, discord.HTTPException, ValueError):
                     message = None
             embed = await self.build_test_queue_embed(guild, mode)
-            view = GamemodeTestQueueView(self, mode)
+            mode_config = (config.get("test_queue_modes") or {}).get(mode_key(mode), {})
+            queue_is_open = bool(mode_config.get("open", False))
+            view = GamemodeTestQueueView(self, mode, is_open=queue_is_open)
             if message:
                 await message.edit(embed=embed, view=view, allowed_mentions=discord.AllowedMentions.none())
             else:
