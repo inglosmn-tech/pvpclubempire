@@ -3231,7 +3231,7 @@ class PvPClubTiersCog(commands.Cog):
             await self.refresh_test_queue_panel(guild)
             return
 
-        await self.add_global_signups_to_queue(guild, gamemode)
+        await self.refill_open_queues_from_signups(guild)
         await self.refresh_test_queue_panel(guild)
         await interaction.followup.send(
             f"✅ Private test session opened: {channel.mention}\n"
