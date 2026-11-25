@@ -1246,27 +1246,15 @@ class PvPClubTiersCog(commands.Cog):
             self.test_queue_entries.count_documents,
             {"guild_id": guild.id, "gamemode": gamemode, "status": "waiting"},
         )
-        role_id = (config.get("tester_roles") or {}).get(gamemode)
-        role = guild.get_role(int(role_id)) if role_id else None
-        online_testers = [
-            member for member in (role.members if role else [])
-            if not member.bot and member.status != discord.Status.offline
-        ]
-        is_open = configured_open and bool(online_testers)
-        if is_open:
-            tester_word = "tester" if len(online_testers) == 1 else "testers"
-            status_line = (
-                f"🟢 **Open.** {len(online_testers)} {gamemode} {tester_word} accepting players."
-            )
+        # Queue availability is controlled explicitly by a tester. Do not infer
+        # online status from Member.status: the bot does not request Discord's
+        # privileged Presence Intent, so cached members can all appear offline.
+        if configured_open:
+            status_line = "🟢 **Open.** A tester has opened this queue and is accepting players."
             colour = 0x57D69A
         else:
-            reason = (
-                f"No {gamemode} tester online right now."
-                if not online_testers else
-                f"The {gamemode} queue has not been opened by a tester yet."
-            )
             status_line = (
-                f"🔴 **Closed.** {reason} "
+                "🔴 **Closed.** No tester is accepting players right now. "
                 f"{count} on the waitlist · you'll be pinged when it opens."
             )
             colour = 0x747B8C
