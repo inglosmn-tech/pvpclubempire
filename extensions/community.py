@@ -1,4 +1,4 @@
-"""Community utilities: meows, birthdays, suggestions, welcome, autoroles and logs."""
+"""Community utilities: meow roles, birthdays, suggestions, welcome, autoroles and logs."""
 from __future__ import annotations
 
 import asyncio
@@ -24,9 +24,9 @@ MEOW_ROLE_SPECS = {
 MEOW_THRESHOLDS = [(250, "legend"), (100, "master"), (50, "enthusiast"), (10, "rookie")]
 
 
-def make_embed(title: str, description: str = "", color: int = 0xFF9CEE) -> discord.Embed:
+def make_embed(title: str, description: str = "", color: int = 0x5865F2) -> discord.Embed:
     e = discord.Embed(title=title, description=description, color=color)
-    e.set_footer(text="PVPClub Empire • meow :3")
+    e.set_footer(text="PVPClub Empire • Community")
     return e
 
 
@@ -265,7 +265,7 @@ class CommunityCog(commands.Cog):
             return
         self.bot.store.data.setdefault("welcome_channels", {})[str(ctx.guild.id)] = channel.id
         await self.bot.store.save()
-        await ctx.reply(f"🐾 Meowing welcome messages will be sent in {channel.mention}.", mention_author=False)
+        await ctx.reply(f"✅ Welcome messages will be sent in {channel.mention}.", mention_author=False)
 
     @commands.command(name="autorole")
     @commands.guild_only()
@@ -424,7 +424,7 @@ class CommunityCog(commands.Cog):
                     # Don't mark it announced; the member might become fetchable later today.
                     continue
             try:
-                e = make_embed("🎂 Happy birthday!", f"Everyone wish {member.mention} a very happy birthday! May your day be full of cat treats, good vibes and wins. 🐾")
+                e = make_embed("🎂 Happy birthday!", f"Everyone wish {member.mention} a very happy birthday! We hope you have a great day and an excellent year ahead.")
                 e.set_thumbnail(url=member.display_avatar.url)
                 await channel.send(embed=e, allowed_mentions=discord.AllowedMentions(users=[member]))
                 await self.bot.store.mark_birthday_announced(guild_id, user_id, now.year)
@@ -500,7 +500,7 @@ class CommunityCog(commands.Cog):
         channel_id = self.bot.store.data.get("welcome_channels", {}).get(str(member.guild.id))
         channel = member.guild.get_channel(int(channel_id)) if channel_id else None
         if isinstance(channel, discord.TextChannel):
-            e = make_embed("🐾 A new kitten has arrived!", f"Welcome {member.mention} to **{member.guild.name}**!\n\nSay `meow` to join the meow leaderboard and earn your Meow role. :3")
+            e = make_embed("👋 Welcome!", f"Welcome {member.mention} to **{member.guild.name}**!\n\nPlease read the server rules, explore the channels, and enjoy your stay.")
             e.set_thumbnail(url=member.display_avatar.url)
             try:
                 await channel.send(embed=e, allowed_mentions=discord.AllowedMentions(users=[member]))
