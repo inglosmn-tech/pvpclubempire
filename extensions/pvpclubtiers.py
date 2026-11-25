@@ -932,7 +932,7 @@ class PvPClubTiersCog(commands.Cog):
     async def refresh_test_queue_panel(self, guild: discord.Guild):
         try:
             await self.ensure_test_queue_panel(guild)
-        except (discord.Forbidden, discord.HTTPException):
+        except Exception:
             log.exception("Could not refresh test queue panel in guild %s", guild.id)
 
     async def reset_test_queue_setup(
@@ -941,6 +941,7 @@ class PvPClubTiersCog(commands.Cog):
         *,
         public_category: discord.CategoryChannel | None = None,
         tester_roles: dict | None = None,
+        reset_queue_state: bool = True,
     ):
         if self.db is None:
             raise RuntimeError("MongoDB is not connected. Add MONGO_URI in Render and restart the bot.")
@@ -1096,18 +1097,23 @@ class PvPClubTiersCog(commands.Cog):
             except (discord.Forbidden, discord.HTTPException):
                 log.exception("Could not delete legacy tier ticket category in guild %s", guild.id)
 
-        # A reset starts with empty queues and all gamemodes closed. Active queue
-        # sessions are not deleted when setup is rerun.
-        await self.db_call(
-            self.test_queue_entries.update_many,
-            {"guild_id": guild.id, "status": "waiting"},
-            {"$set": {
-                "status": "cancelled",
-                "cancelled_at": datetime.now(timezone.utc),
-                "cancel_reason": "Test queues were reset by server staff",
-            }},
-        )
-        queue_modes = {mode_key(mode): {"open": False} for mode in GAMEMODES}
+        # ?resetuptest clears waiting entries and closes every queue. A normal
+        # ?tiersetup run preserves players already waiting and current open states.
+        if reset_queue_state:
+            await self.db_call(
+                self.test_queue_entries.update_many,
+                {"guild_id": guild.id, "status": "waiting"},
+                {"$set": {
+                    "status": "cancelled",
+                    "cancelled_at": datetime.now(timezone.utc),
+                    "cancel_reason": "Test queues were reset by server staff",
+                }},
+            )
+            queue_modes = {mode_key(mode): {"open": False} for mode in GAMEMODES}
+        else:
+            queue_modes = dict(config.get("test_queue_modes") or {})
+            for mode in GAMEMODES:
+                queue_modes.setdefault(mode_key(mode), {"open": False})
         await self.db_call(
             self.settings.update_one,
             {"guild_id": guild.id},
@@ -1155,7 +1161,7 @@ class PvPClubTiersCog(commands.Cog):
 
             public_category = await self.find_category(guild, "PVPCLUBTIERS")
             queue_channel, session_category, tester_roles, deleted = await self.reset_test_queue_setup(
-                guild, public_category=public_category,
+                guild, public_category=public_category, reset_queue_state=False,
             )
             results = await self.find_channel(guild, "results", public_category)
             activity = await self.find_channel(guild, "tier-activity", public_category)
