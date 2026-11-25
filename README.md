@@ -78,7 +78,7 @@ Give the bot the permissions needed for the features you enable: Manage Roles, M
 - `?eventsetup #events` — configure events and the Event Ping opt-in panel.
 - `?tiersetup` — create/check the 10 shared LT5–HT1 tier roles and 11 gamemode tester roles, `#queues` cards, the one-IGN `#request-test` panel, private `TEST SESSIONS`, `#tier-info`, `#tier-leaderboard`, results/activity/log channels and matchmaking. Requires `MONGO_URI`.
 - `?settier <gamemode> <ign>` — server-owner-only manual tier assignment. Looks up an existing PvPClubTiers player by Minecraft username and opens a tier selector; records the change in history and updates their overall tier role.
-- `?resetuptest` — retire the old public request panel and legacy test-ticket channels, cancel waiting entries, close all gamemode queues and rebuild the queue/request panels. It preserves `request-test` for the new one-IGN panel. It does not delete general support tickets, results, activity, logs or unrelated channels.
+- `?resetuptest` — retire old public test tickets and thread-only queue/request forum channels, cancel waiting entries, close all gamemode queues and rebuild the text-channel panels. It preserves results, activity, logs, general support tickets and unrelated channels.
 - `#queues` has one status card per gamemode, with Join/Leave buttons, a 20-player waitlist and first-to format. Players can join while a queue is closed and are pinged when a tester opens it. The request panel saves an IGN once and lets players join multiple waitlists; **My waitlists** and **Leave all waitlists** manage their entries.
 - `?testerappsetup #review-channel` — configure the tester application review channel and refresh the Apply for Tier Tester panel in `#tier-info`. Applicants choose a gamemode and submit their Minecraft IGN, current tier/rank, testing experience and reason; the form is sent to the configured review channel. Only the server owner can accept or reject. Accepted applicants receive only that gamemode's Tester role. Run `?tiersetup` first. Requires `MONGO_URI`.
 - `?triviasetup` — create/configure `#trivia` and start a new question every 20 minutes. Correct answers earn one point.
@@ -86,7 +86,7 @@ Give the bot the permissions needed for the features you enable: Manage Roles, M
 - `?spamchannel` — mark the current channel as a spam zone where normal bot AutoMod is bypassed but the anti-macro human check stays active. Use `?spamchannel off` to disable it or `?spamchannel status` to check.
 - `?storage` — inspect database storage usage.
 - `?levelsetup` or `/level-setup` — set up XP/voice leveling, a `#level-ups` channel and neutral milestone roles. Existing bot-created cat-themed level roles and channels are renamed when possible.
-- `?v1` — rename categories and channels into the decorative `emoji | CATEGORY` and `『emoji』 channel-name` styles.
+- `?v1` — rename categories and channels into the decorative `emoji│CATEGORY` and `『emoji』 channel-name` styles.
 - `?catinvasion` — enable random cat events in the current channel; first exact `MEOW` within 60 seconds wins 25 XP. Events run every 3–6 hours between 10:00 and 22:00 (Amsterdam time).
 - `?catinvasionstop` — disable Cat Invasion.
 
