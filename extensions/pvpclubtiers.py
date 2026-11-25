@@ -531,6 +531,33 @@ class TestQueuePanelView(discord.ui.View):
         custom_id="inglotiers:test-queue:join",
     )
     async def join_queue(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if not await self.cog.require_db(interaction):
+            return
+        if interaction.guild is None or not isinstance(interaction.user, discord.Member):
+            await interaction.response.send_message(
+                "Use this request panel inside the server.",
+                ephemeral=True,
+            )
+            return
+        try:
+            player = await self.cog.get_player(interaction.guild.id, interaction.user.id)
+        except Exception:
+            log.exception("Could not load the saved Minecraft IGN for %s", interaction.user.id)
+            await interaction.response.send_message(
+                "I couldn't load your saved Minecraft IGN. Please try again.",
+                ephemeral=True,
+            )
+            return
+
+        username = (player or {}).get("username")
+        if username and re.fullmatch(r"[A-Za-z0-9_]{3,16}", str(username)):
+            await interaction.response.send_message(
+                f"Your saved Minecraft IGN is **{username}**. Choose one or more gamemodes:",
+                view=TestQueueJoinModesView(self.cog, str(username)),
+                ephemeral=True,
+            )
+            return
+
         await interaction.response.send_modal(TestQueueJoinModal(self.cog))
 
     @discord.ui.button(
