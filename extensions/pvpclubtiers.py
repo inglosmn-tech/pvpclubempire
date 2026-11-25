@@ -23,17 +23,17 @@ log = logging.getLogger("pvpclub-empire.pvpclubtiers")
 
 GAMEMODES = [
     "Spear Mace", "Sword", "Axe", "UHC", "Elytra",
-    "Creeper", "Diamond SMP", "Mace", "SMP", "Cart",
+    "Creeper", "Diamond SMP", "Mace", "SMP", "Vanilla", "Cart",
 ]
 QUEUE_CAPACITY = 20
 MODE_EMOJIS = {
     "Spear Mace": "⚔️", "Sword": "🗡️", "Axe": "🪓", "UHC": "🛡️",
     "Elytra": "🪽", "Creeper": "💥", "Diamond SMP": "💎", "Mace": "🔨",
-    "SMP": "🌿", "Cart": "🛒",
+    "SMP": "🌿", "Vanilla": "🔮", "Cart": "🛒",
 }
 MODE_BEST_OF = {
     "Spear Mace": 4, "Sword": 4, "Axe": 4, "UHC": 4, "Elytra": 4,
-    "Creeper": 3, "Diamond SMP": 4, "Mace": 4, "SMP": 4, "Cart": 3,
+    "Creeper": 3, "Diamond SMP": 4, "Mace": 4, "SMP": 4, "Vanilla": 3, "Cart": 3,
 }
 TIER_WEBSITE_ENV = "PVPCLUBTIERS_WEBSITE_URL"
 TIERS = ["HT1", "LT1", "HT2", "LT2", "HT3", "LT3", "HT4", "LT4", "HT5", "LT5"]
@@ -193,7 +193,7 @@ footer{max-width:1180px;margin:auto;padding:20px 22px 35px;color:var(--muted);fo
 <div style="overflow-x:auto"><table><thead><tr><th>#</th><th>Player</th><th>Best mode</th><th>Best tier</th></tr></thead><tbody id="rows"><tr><td colspan="4" class="empty">Loading leaderboard…</td></tr></tbody></table></div></section>
 <section class="panel profile" id="profile"><div class="eyebrow">Player profile</div><h2 id="profileName"></h2><div class="muted" id="profileBest"></div><div class="profile-grid" id="profileModes"></div><h3>Recent tier history</h3><div id="profileHistory" class="muted"></div></section></main><footer>PvPClubTiers • EU only • mcpvp.club</footer>
 <script>
-const modes=["Spear Mace","Sword","Axe","UHC","Elytra","Creeper","Diamond SMP","Mace","SMP","Cart"];const modeSelect=document.getElementById("mode");
+const modes=["Spear Mace","Sword","Axe","UHC","Elytra","Creeper","Diamond SMP","Mace","SMP","Vanilla","Cart"];const modeSelect=document.getElementById("mode");
 modes.forEach(m=>{const o=document.createElement("option");o.value=m;o.textContent=m;modeSelect.appendChild(o)});
 function badge(t){const s=document.createElement("span");s.className="tier";s.textContent=t||"Unranked";return s}
 async function load(){const mode=modeSelect.value;const body=document.getElementById("rows");body.innerHTML='<tr><td colspan="4" class="empty">Loading…</td></tr>';try{const r=await fetch("/api/pvpclubtiers/leaderboard"+(mode?"?mode="+encodeURIComponent(mode):""));const x=await r.json();document.getElementById("players").textContent=x.total??0;body.innerHTML="";if(!x.players||!x.players.length){body.innerHTML='<tr><td colspan="4" class="empty">No ranked players yet. Ask staff to set up PvPClubTiers.</td></tr>';return}x.players.forEach((p,i)=>{const tr=document.createElement("tr");const rank=document.createElement("td");rank.textContent=i+1;const name=document.createElement("td");name.className="player";name.textContent=p.username;name.onclick=()=>profile(p.username);const bm=document.createElement("td");bm.textContent=p.best_mode||"—";bm.className="muted";const tier=document.createElement("td");tier.appendChild(badge(mode?(p.tiers||{})[mode]:p.best_tier));tr.append(rank,name,bm,tier);body.appendChild(tr)})}catch(e){body.innerHTML='<tr><td colspan="4" class="empty">Leaderboard is temporarily unavailable.</td></tr>'}}
