@@ -25,6 +25,17 @@ GAMEMODES = [
     "Spear Mace", "Sword", "Axe", "UHC", "Elytra",
     "Creeper", "Diamond SMP", "Mace", "SMP", "Cart",
 ]
+QUEUE_CAPACITY = 20
+MODE_EMOJIS = {
+    "Spear Mace": "⚔️", "Sword": "🗡️", "Axe": "🪓", "UHC": "🛡️",
+    "Elytra": "🪽", "Creeper": "💥", "Diamond SMP": "💎", "Mace": "🔨",
+    "SMP": "🌿", "Cart": "🛒",
+}
+MODE_BEST_OF = {
+    "Spear Mace": 4, "Sword": 4, "Axe": 4, "UHC": 4, "Elytra": 4,
+    "Creeper": 3, "Diamond SMP": 4, "Mace": 4, "SMP": 4, "Cart": 3,
+}
+TIER_WEBSITE_ENV = "PVPCLUBTIERS_WEBSITE_URL"
 TIERS = ["HT1", "LT1", "HT2", "LT2", "HT3", "LT3", "HT4", "LT4", "HT5", "LT5"]
 POINTS = {"HT1": 60, "LT1": 45, "HT2": 30, "LT2": 20, "HT3": 10, "LT3": 6, "HT4": 4, "LT4": 3, "HT5": 2, "LT5": 1}
 COLOURS = {
