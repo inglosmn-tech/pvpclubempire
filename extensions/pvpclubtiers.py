@@ -2044,6 +2044,7 @@ class PvPClubTiersCog(commands.Cog):
         missing_modes = []
         hierarchy_modes = []
         role_map_changed = False
+        created_modes = []
         for mode in GAMEMODES:
             role_id = role_ids.get(mode)
             try:
@@ -2058,6 +2059,16 @@ class PvPClubTiersCog(commands.Cog):
                     (item for item in guild.roles if item.name.casefold() == expected_name),
                     None,
                 )
+            if role is None and mode == "Vanilla":
+                # Repair this known missing role directly without rerunning the
+                # full server setup or touching existing queue state.
+                role = await guild.create_role(
+                    name="Vanilla Tester",
+                    colour=discord.Colour(0x36C5D8),
+                    reason="Create missing PvPClubTiers Vanilla Tester role",
+                )
+                created_modes.append(mode)
+
             if role is None:
                 missing_modes.append(mode)
                 continue
@@ -2157,7 +2168,11 @@ class PvPClubTiersCog(commands.Cog):
             f"• Application panel: {ctx.channel.mention}\n"
             f"• Review channel: {reviewchannel.mention} (only the server owner can accept or reject)\n"
             f"• Applicants can choose one of the {len(GAMEMODES)} gamemodes.\n"
-            "• Accepting an application assigns only that gamemode's Tester role.",
+            "• Accepting an application assigns only that gamemode's Tester role."
+            + (
+                "\n• Created and registered: **Vanilla Tester**."
+                if "Vanilla" in created_modes else ""
+            ),
             mention_author=False,
         )
 
