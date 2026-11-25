@@ -812,8 +812,8 @@ class PvPClubTiersCog(commands.Cog):
         public_category = guild.get_channel(int(config.get("public_category_id", 0) or 0))
         if not isinstance(public_category, discord.CategoryChannel):
             public_category = discord.utils.get(guild.categories, name="PVPCLUBTIERS")
-        if not isinstance(channel, discord.TextChannel):
-            channel = discord.utils.get(guild.text_channels, name="test-queues")
+        if not isinstance(channel, discord.TextChannel) and isinstance(public_category, discord.CategoryChannel):
+            channel = discord.utils.get(public_category.text_channels, name="test-queues")
         if channel is None:
             if not isinstance(public_category, discord.CategoryChannel):
                 return None
@@ -954,7 +954,7 @@ class PvPClubTiersCog(commands.Cog):
         queue_channel_id = config.get("test_queue_channel_id")
         queue_channel = guild.get_channel(int(queue_channel_id)) if queue_channel_id else None
         if not isinstance(queue_channel, discord.TextChannel):
-            queue_channel = discord.utils.get(guild.text_channels, name="test-queues")
+            queue_channel = discord.utils.get(public_category.text_channels, name="test-queues")
         queue_overwrites = {
             guild.default_role: discord.PermissionOverwrite(
                 view_channel=True, send_messages=False, read_message_history=True,
@@ -1006,9 +1006,9 @@ class PvPClubTiersCog(commands.Cog):
         request_channel_id = config.get("request_channel_id")
         request_channel = guild.get_channel(int(request_channel_id)) if request_channel_id else None
         if not isinstance(request_channel, discord.TextChannel):
-            request_channel = discord.utils.get(guild.text_channels, name="request-test")
+            request_channel = discord.utils.get(public_category.text_channels, name="request-test")
         if isinstance(request_channel, discord.TextChannel) and request_channel.id != queue_channel.id:
-            if request_channel.name == "request-test":
+            if request_channel.name == "request-test" and request_channel.category_id == public_category.id:
                 old_channel_ids.add(request_channel.id)
 
         deleted_old_channels = 0
