@@ -75,9 +75,10 @@ Give the bot the permissions needed for the features you enable: Manage Roles, M
 - `?ticketsetup` — create the ticket panel.
 - `?tierwatchsetup #tier-announcements` — configure official MCTiers watch alerts.
 - `?eventsetup #events` — configure events and the Event Ping opt-in panel.
-- `?tiersetup` — create the 10 shared LT5–HT1 tier roles, 10 gamemode tester roles (Spear Mace, Sword, Axe, UHC, Elytra, Creeper, Diamond SMP, Mace, SMP and Cart), the player-created test-ticket panel, and PvPClubTiers channels. Requires `MONGO_URI`.
+- `?tiersetup` — create/check the 10 shared LT5–HT1 tier roles, gamemode tester roles, a public `#test-queues` panel, private `TEST SESSIONS` category, results/activity/log channels and matchmaking. Requires `MONGO_URI`.
 - `?settier <gamemode> <ign>` — server-owner-only manual tier assignment. Looks up an existing PvPClubTiers player by Minecraft username and opens a tier selector; records the change in history and updates their overall tier role.
-- Tier-test requests have no per-gamemode cooldown. Members can request another test after their previous ticket is closed.
+- `?resetuptest` — retire the old public request panel and legacy test-ticket category/channels, cancel waiting entries, close all gamemode queues and rebuild the new queue panel. It does not delete general support tickets, results, activity, logs or unrelated channels.
+- Each gamemode queue starts closed. A member with that gamemode's Tester role opens/closes it and starts the next waiting player from the `#test-queues` panel. Players join with their gamemode and Minecraft username and can leave while waiting.
 - `?testerappsetup #review-channel` — post a tester application panel in the current channel and send applications to the selected review channel. Applicants choose a gamemode and provide their Minecraft username and experience; only the server owner can accept or reject them. Accepted applicants receive only that gamemode's Tester role. Run `?tiersetup` first. Requires `MONGO_URI`.
 - `?triviasetup` — create/configure `#trivia` and start a new question every 20 minutes. Correct answers earn one point.
 - `?triviastop` — pause scheduled trivia.
@@ -91,7 +92,7 @@ Give the bot the permissions needed for the features you enable: Manage Roles, M
 
 - `/tier` — official MCTiers player lookup. The old `/mctiers` command is not registered.
 - `/ign`, `/tiers`, `/profile`, `/tier-leaderboard`, `/tier-rank`, `/search`, `/compare`, `/history`, `/recent` — PvPClubTiers player commands.
-- `/set-tier` — record a result from a claimed player test ticket. `/claim`, `/unclaim`, `/close` also manage PvPClubTiers test tickets.
+- `/set-tier` — record the result in the private test session assigned to you. `/close` closes that session. Only the queued player, the tester who started that session, and the bot can view the channel; Discord administrators can always bypass channel visibility.
 - `/testerstats`, `/testerboard`, `/tierban`, `/tierunban`, `/tier-adjust`, `/tier-recalculate`, `/tier-stats`, `/tier-cooldowns` — PvPClubTiers staff and tier administration.
 - `/duel`, `/duel-score`, `/duel-cancel`, `/elo`, `/elo-leaderboard` — competitive duels with ELO ratings and win/loss tracking.
 - `/trivia-leaderboard` — trivia points leaderboard.
