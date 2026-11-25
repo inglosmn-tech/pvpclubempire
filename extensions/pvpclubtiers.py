@@ -2865,6 +2865,104 @@ class PvPClubTiersCog(commands.Cog):
             except discord.Forbidden:
                 log.warning("Cannot pin the matchmaking panel in %s; grant Manage Messages to the bot.", channel.id)
 
+    async def recover_interrupted_test_starts(self, guild: discord.Guild):
+        """Repair queue entries if the process stopped while a tester was opening a session."""
+        now = datetime.now(timezone.utc)
+        entries = await self.db_call(
+            lambda: list(self.test_queue_entries.find({
+                "guild_id": guild.id,
+                "status": "starting",
+            }))
+        )
+        if not entries:
+            return
+
+        config = await self.setting(guild.id)
+        category_id = config.get("test_session_category_id")
+        category = guild.get_channel(int(category_id)) if category_id else None
+
+        for entry in entries:
+            started_at = entry.get("starting_at")
+            if isinstance(started_at, datetime):
+                if started_at.tzinfo is None:
+                    started_at = started_at.replace(tzinfo=timezone.utc)
+                if (now - started_at).total_seconds() < 120:
+                    continue
+
+            queue_id = entry.get("queue_id")
+            ticket_id = entry.get("ticket_id")
+            ticket = await self.db_call(
+                self.tickets.find_one,
+                {"guild_id": guild.id, "queue_id": queue_id, "session_type": "queue"},
+            )
+            if ticket:
+                channel_id = ticket.get("channel_id") or ticket.get("channelId")
+                channel = guild.get_channel(int(channel_id)) if channel_id else None
+                if channel is None and channel_id:
+                    try:
+                        fetched = await guild.fetch_channel(int(channel_id))
+                        channel = fetched if isinstance(fetched, discord.TextChannel) else None
+                    except (discord.NotFound, discord.Forbidden, discord.HTTPException):
+                        channel = None
+                if channel is not None:
+                    recovered_status = "completed" if ticket.get("status") == "completed" else "testing"
+                    await self.db_call(
+                        self.test_queue_entries.update_one,
+                        {"queue_id": queue_id, "status": "starting"},
+                        {"$set": {
+                            "status": recovered_status,
+                            "ticket_id": ticket.get("ticket_id"),
+                            "channel_id": channel.id,
+                            "tester_id": ticket.get("claimed_by"),
+                            "recovered_at": now,
+                        }},
+                    )
+                    continue
+
+                await self.db_call(
+                    self.tickets.update_one,
+                    {"ticket_id": ticket.get("ticket_id")},
+                    {"$set": {
+                        "status": "closed",
+                        "closed_at": now,
+                        "migration_note": "Session channel was missing during startup recovery",
+                    }},
+                )
+                await self.db_call(
+                    self.test_queue_entries.update_one,
+                    {"queue_id": queue_id, "status": "starting"},
+                    {"$set": {
+                        "status": "closed",
+                        "closed_at": now,
+                        "recovery_note": "The session channel no longer exists",
+                    }},
+                )
+                continue
+
+            # No ticket record was committed. Remove a channel that may have been
+            # created just before the process stopped, then safely return the player
+            # to the front of the waiting queue.
+            if isinstance(category, discord.CategoryChannel) and ticket_id:
+                for orphan in list(category.text_channels):
+                    if ticket_id in (orphan.topic or ""):
+                        try:
+                            await orphan.delete(reason="Removing an incomplete PvPClubTiers queue session")
+                        except discord.HTTPException:
+                            log.exception("Could not remove incomplete queue session %s", orphan.id)
+            await self.db_call(
+                self.test_queue_entries.update_one,
+                {"queue_id": queue_id, "status": "starting"},
+                {"$set": {
+                    "status": "waiting",
+                    "tester_id": None,
+                    "ticket_id": None,
+                    "channel_id": None,
+                    "starting_at": None,
+                    "recovered_at": now,
+                    "recovery_note": "Interrupted session creation was returned to the queue",
+                }},
+            )
+
     @commands.Cog.listener()
     async def on_ready(self):
         if self.db is None:
@@ -2876,6 +2974,7 @@ class PvPClubTiersCog(commands.Cog):
                     await self.ensure_matchmaking_panel(guild)
                 if config.get("test_queue_channel_id"):
                     await self.ensure_test_queue_panel(guild)
+                await self.recover_interrupted_test_starts(guild)
                 # A Mongo transaction is all-or-nothing, so stale resolving states
                 # can safely be sent to staff review after a restart.
                 cutoff = datetime.now(timezone.utc).timestamp() - 15 * 60
