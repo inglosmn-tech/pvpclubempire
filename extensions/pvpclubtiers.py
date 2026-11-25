@@ -1635,7 +1635,7 @@ class PvPClubTiersCog(commands.Cog):
                         view_channel=True, send_messages=True, read_message_history=True,
                         use_application_commands=True,
                     )
-            logs = discord.utils.get(guild.text_channels, name="ticket-logs")
+            logs = await self.find_channel(guild, "ticket-logs", logs_category, True)
             if logs:
                 await logs.edit(
                     category=logs_category,
@@ -1672,7 +1672,7 @@ class PvPClubTiersCog(commands.Cog):
                 upsert=True,
             )
             await self.ensure_test_queue_panel(guild)
-            await self.ensure_test_request_panel(guild)
+            request_channel = await self.ensure_test_request_panel(guild)
             await self.ensure_tier_info_panel(guild)
             await self.ensure_leaderboard_panel(guild)
             await self.ensure_matchmaking_panel(guild)
@@ -1681,7 +1681,10 @@ class PvPClubTiersCog(commands.Cog):
                 f"• {len(TIERS)} shared tier roles checked/created.\n"
                 f"• {len(GAMEMODES)} gamemode tester roles checked/created.\n"
                 f"• Test queues: {queue_channel.mention}\n"
+                f"• Request panel: {request_channel.mention if request_channel else 'not created'}\n"
                 f"• Private test sessions: **{session_category.name}**\n"
+                f"• Tier info: {tier_info.mention}\n"
+                f"• Leaderboard: {leaderboard.mention}\n"
                 f"• Results: {results.mention}\n"
                 f"• Activity: {activity.mention}\n"
                 f"• Logs: {logs.mention}\n"
@@ -1716,9 +1719,11 @@ class PvPClubTiersCog(commands.Cog):
                 ctx.guild,
                 public_category=public_category,
             )
+            request_channel = await self.ensure_test_request_panel(ctx.guild)
             await ctx.send(
                 "✅ **Test queues reset successfully.**\n"
                 f"• Queue panel: {queue_channel.mention}\n"
+                f"• Request panel: {request_channel.mention if request_channel else 'not created'}\n"
                 f"• Private sessions: **{session_category.name}**\n"
                 f"• Gamemode tester roles checked: **{len(roles)}**\n"
                 f"• Old test channels deleted: **{deleted}**\n"
@@ -1829,7 +1834,7 @@ class PvPClubTiersCog(commands.Cog):
             f"✅ **Tester applications are ready!**\n"
             f"• Application panel: {ctx.channel.mention}\n"
             f"• Owner-only review channel: {reviewchannel.mention}\n"
-            "• Applicants can choose one of the nine gamemodes.\n"
+            f"• Applicants can choose one of the {len(GAMEMODES)} gamemodes.\n"
             "• Accepting an application assigns only that gamemode's Tester role.",
             mention_author=False,
         )
