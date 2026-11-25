@@ -104,6 +104,7 @@ Give the bot the permissions needed for the features you enable: Manage Roles, M
 ## Prefix and slash command changes
 
 - `?setmodlog` and `?ticketsetup` are prefix commands.
+- `/meow-setup` and `/meow-reset` have been replaced by `/level-setup` and `/level-reset`; `?levelsetup` is also available as a prefix command.
 - `/tier` is the MCTiers player lookup command; `/mctiers` is not registered.
 - `/cat` and `/roast` are not registered.
 - `/fban` is a 30-second timed presentation only. It does not ban, kick or timeout the member; the message explicitly states that no Discord moderation action was applied. `/ban` remains the actual ban command.
