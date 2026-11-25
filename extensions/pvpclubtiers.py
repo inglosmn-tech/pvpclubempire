@@ -1674,8 +1674,9 @@ class PvPClubTiersCog(commands.Cog):
     async def show_tester_queue_controls(self, interaction: discord.Interaction):
         if not await self.require_db(interaction):
             return
+        await interaction.response.defer(ephemeral=True, thinking=True)
         if not isinstance(interaction.user, discord.Member):
-            await interaction.response.send_message("Use this control inside the server.", ephemeral=True)
+            await interaction.followup.send("Use this control inside the server.", ephemeral=True)
             return
         config = await self.setting(interaction.guild.id)
         role_ids = config.get("tester_roles") or {}
@@ -1688,12 +1689,12 @@ class PvPClubTiersCog(commands.Cog):
                 if role_ids.get(mode) and int(role_ids[mode]) in member_role_ids
             ]
         if not allowed_modes:
-            await interaction.response.send_message(
+            await interaction.followup.send(
                 "You need a gamemode Tester role to manage test queues.",
                 ephemeral=True,
             )
             return
-        await interaction.response.send_message(
+        await interaction.followup.send(
             "Choose one of the gamemodes you are allowed to test:",
             view=TesterQueueControlsView(self, allowed_modes),
             ephemeral=True,
@@ -1851,13 +1852,13 @@ class PvPClubTiersCog(commands.Cog):
     async def toggle_test_queue(self, interaction: discord.Interaction, gamemode: str):
         if not await self.require_db(interaction):
             return
+        await interaction.response.defer(ephemeral=True, thinking=True)
         if not isinstance(interaction.user, discord.Member) or not await self.staff_or_tester(interaction.user, gamemode):
-            await interaction.response.send_message(
+            await interaction.followup.send(
                 f"Only a {gamemode} Tester or server staff can manage this queue.",
                 ephemeral=True,
             )
             return
-        await interaction.response.defer(ephemeral=True, thinking=True)
         config = await self.setting(interaction.guild.id)
         key = mode_key(gamemode)
         modes = config.get("test_queue_modes") or {}
@@ -1879,13 +1880,13 @@ class PvPClubTiersCog(commands.Cog):
     async def start_next_test(self, interaction: discord.Interaction, gamemode: str):
         if not await self.require_db(interaction):
             return
+        await interaction.response.defer(ephemeral=True, thinking=True)
         if not isinstance(interaction.user, discord.Member) or not await self.staff_or_tester(interaction.user, gamemode):
-            await interaction.response.send_message(
+            await interaction.followup.send(
                 f"Only a {gamemode} Tester or server staff can start this test.",
                 ephemeral=True,
             )
             return
-        await interaction.response.defer(ephemeral=True, thinking=True)
         guild = interaction.guild
         config = await self.setting(guild.id)
         mode_config = (config.get("test_queue_modes") or {}).get(mode_key(gamemode), {})
