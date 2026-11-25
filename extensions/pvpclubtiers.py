@@ -2061,69 +2061,84 @@ class PvPClubTiersCog(commands.Cog):
     async def ticket_action(self, interaction, action):
         if not await self.require_db(interaction):
             return
-        ticket = await self.db_call(self.tickets.find_one, {"guild_id": interaction.guild.id,
-            "channel_id": interaction.channel_id, "status": {"$in": ["open", "claimed", "completed"]}})
+        if action != "close":
+            await interaction.response.send_message(
+                "Test sessions are assigned automatically from the queue. Use the queue panel to start a session.",
+                ephemeral=True,
+            )
+            return
+        await interaction.response.defer(ephemeral=True, thinking=True)
+        ticket = await self.db_call(
+            self.tickets.find_one,
+            {
+                "guild_id": interaction.guild.id,
+                "channel_id": interaction.channel_id,
+                "status": {"$in": ["open", "claimed", "completed"]},
+            },
+        )
         if not ticket:
-            await interaction.response.send_message("This is not an active PvPClubTiers ticket.", ephemeral=True)
+            await interaction.followup.send("This is not an active PvPClubTiers test session.", ephemeral=True)
             return
+
         actor = interaction.user
-        allowed = isinstance(actor, discord.Member) and await self.staff_or_tester(actor, ticket["gamemode"])
-        if action == "close":
-            if ticket.get("session_type") == "queue":
-                can_close = (
-                    actor.id == ticket["discord_id"]
-                    or actor.id == ticket.get("claimed_by")
-                    or (isinstance(actor, discord.Member) and (
-                        actor.guild_permissions.manage_guild or actor.guild_permissions.administrator
-                    ))
+        if ticket.get("session_type") == "queue":
+            can_close = (
+                actor.id == ticket["discord_id"]
+                or actor.id == ticket.get("claimed_by")
+                or (
+                    isinstance(actor, discord.Member)
+                    and (
+                        actor.guild_permissions.manage_guild
+                        or actor.guild_permissions.administrator
+                    )
                 )
-            else:
-                can_close = actor.id == ticket["discord_id"] or allowed
-            if not can_close:
-                await interaction.response.send_message(
-                    "Only the player, the tester assigned to this session, or an administrator can close it.",
-                    ephemeral=True,
-                )
-                return
-            await self.db_call(self.tickets.update_one, {"ticket_id": ticket["ticket_id"]},
-                               {"$set": {"status": "closed", "closed_at": datetime.now(timezone.utc), "closed_by": actor.id}})
-            if ticket.get("session_type") == "queue" and ticket.get("status") != "completed":
-                await self.db_call(
-                    self.test_queue_entries.update_one,
-                    {"queue_id": ticket.get("queue_id"), "status": "testing"},
-                    {"$set": {"status": "closed", "closed_at": datetime.now(timezone.utc)}},
-                )
-            await interaction.response.send_message("Ticket closed. This channel will be deleted in five seconds.")
-            config = await self.setting(interaction.guild.id)
-            log_channel = interaction.guild.get_channel(config.get("logs_channel_id", 0))
-            if log_channel:
-                await log_channel.send(f"Closed PvPClubTiers ticket {ticket['ticket_id']} for {ticket['username']} ({ticket['gamemode']}) by {actor.mention}.")
-            await asyncio.sleep(5)
-            try:
-                await interaction.channel.delete(reason=f"PvPClubTiers ticket closed by {actor}")
-            except discord.HTTPException:
-                pass
-            return
-        if ticket["status"] == "completed":
-            await interaction.response.send_message("This test is already completed. You can close the ticket.", ephemeral=True)
-            return
-        if not allowed:
-            await interaction.response.send_message(f"Only {ticket['gamemode']} testers or server staff can {action} this ticket.", ephemeral=True)
-            return
-        if action == "claim":
-            if ticket.get("claimed_by") and ticket["claimed_by"] != actor.id:
-                await interaction.response.send_message(f"This ticket is already claimed by <@{ticket['claimed_by']}>.", ephemeral=True)
-                return
-            await self.db_call(self.tickets.update_one, {"ticket_id": ticket["ticket_id"]},
-                               {"$set": {"status": "claimed", "claimed_by": actor.id, "claimed_at": datetime.now(timezone.utc)}})
-            await interaction.response.send_message(f"🧪 Ticket claimed by {actor.mention}.")
+            )
         else:
-            if ticket.get("claimed_by") != actor.id and not actor.guild_permissions.manage_guild:
-                await interaction.response.send_message("You can only unclaim a ticket you claimed.", ephemeral=True)
-                return
-            await self.db_call(self.tickets.update_one, {"ticket_id": ticket["ticket_id"]},
-                               {"$set": {"status": "open", "claimed_by": None, "claimed_at": None}})
-            await interaction.response.send_message(f"Ticket unclaimed by {actor.mention}.")
+            allowed = isinstance(actor, discord.Member) and await self.staff_or_tester(actor, ticket["gamemode"])
+            can_close = actor.id == ticket["discord_id"] or allowed
+        if not can_close:
+            await interaction.followup.send(
+                "Only the player, the tester assigned to this session, or an administrator can close it.",
+                ephemeral=True,
+            )
+            return
+
+        await self.db_call(
+            self.tickets.update_one,
+            {"ticket_id": ticket["ticket_id"]},
+            {"$set": {
+                "status": "closed",
+                "closed_at": datetime.now(timezone.utc),
+                "closed_by": actor.id,
+            }},
+        )
+        if ticket.get("session_type") == "queue" and ticket.get("status") != "completed":
+            await self.db_call(
+                self.test_queue_entries.update_one,
+                {"queue_id": ticket.get("queue_id"), "status": "testing"},
+                {"$set": {"status": "closed", "closed_at": datetime.now(timezone.utc)}},
+            )
+
+        await interaction.followup.send(
+            "Test session closed. This private channel will be deleted in five seconds.",
+            ephemeral=True,
+        )
+        config = await self.setting(interaction.guild.id)
+        log_channel = interaction.guild.get_channel(int(config.get("logs_channel_id", 0) or 0))
+        if log_channel:
+            try:
+                await log_channel.send(
+                    f"Closed PvPClubTiers test {ticket['ticket_id']} for "
+                    f"{ticket['username']} ({ticket['gamemode']}).",
+                    allowed_mentions=discord.AllowedMentions.none(),
+                )
+            except discord.HTTPException:
+                log.exception("Could not log closed PvPClubTiers test %s", ticket["ticket_id"])
+        await asyncio.sleep(5)
+        try:
+            await interaction.channel.delete(reason=f"PvPClubTiers session closed by {actor}")
+        except discord.HTTPException:
+            log.exception("Could not delete closed PvPClubTiers test channel %s", interaction.channel_id)
 
     async def sync_best_role(self, member, player):
         config = await self.setting(member.guild.id)
