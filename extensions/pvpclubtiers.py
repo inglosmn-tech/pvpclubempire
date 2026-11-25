@@ -341,46 +341,6 @@ class OwnerSetTierView(discord.ui.View):
         self.add_item(OwnerSetTierSelect(cog, gamemode, username, player_id, current_tier))
 
 
-class TierRequestPanelView(discord.ui.View):
-    def __init__(self, cog):
-        super().__init__(timeout=None)
-        self.cog = cog
-
-    @discord.ui.button(label="Request a Tier Test", style=discord.ButtonStyle.primary, emoji="🧪", custom_id="inglotiers:request")
-    async def request_test(self, interaction: discord.Interaction, button: discord.ui.Button):
-        await interaction.response.send_message("Choose the gamemode you want to be tested in.",
-                                                view=GamemodeSelectView(self.cog), ephemeral=True)
-
-
-class GamemodeSelect(discord.ui.Select):
-    def __init__(self, cog):
-        self.cog = cog
-        super().__init__(placeholder="Choose a gamemode…", min_values=1, max_values=1,
-                         options=[discord.SelectOption(label=m, value=m) for m in GAMEMODES],
-                         custom_id="inglotiers:mode-select")
-
-    async def callback(self, interaction: discord.Interaction):
-        await interaction.response.send_modal(TierRequestModal(self.cog, self.values[0]))
-
-
-class GamemodeSelectView(discord.ui.View):
-    def __init__(self, cog):
-        super().__init__(timeout=180)
-        self.add_item(GamemodeSelect(cog))
-
-
-class TierRequestModal(discord.ui.Modal):
-    def __init__(self, cog, gamemode: str):
-        super().__init__(title=f"{gamemode} tier test request")
-        self.cog = cog
-        self.gamemode = gamemode
-        self.username = discord.ui.TextInput(label="Minecraft username", min_length=3, max_length=16, required=True)
-        self.add_item(self.username)
-
-    async def on_submit(self, interaction: discord.Interaction):
-        await self.cog.create_test_ticket(interaction, self.gamemode, str(self.username))
-
-
 class TestQueueJoinSelect(discord.ui.Select):
     def __init__(self, cog):
         self.cog = cog
@@ -505,24 +465,6 @@ class QueueTestSessionView(discord.ui.View):
         custom_id="inglotiers:test-session:close",
     )
     async def close_session(self, interaction: discord.Interaction, button: discord.ui.Button):
-        await self.cog.ticket_action(interaction, "close")
-
-
-class TicketControlsView(discord.ui.View):
-    def __init__(self, cog):
-        super().__init__(timeout=None)
-        self.cog = cog
-
-    @discord.ui.button(label="Claim", style=discord.ButtonStyle.primary, emoji="🧪", custom_id="inglotiers:ticket-claim")
-    async def claim(self, interaction: discord.Interaction, button: discord.ui.Button):
-        await self.cog.ticket_action(interaction, "claim")
-
-    @discord.ui.button(label="Unclaim", style=discord.ButtonStyle.secondary, emoji="↩️", custom_id="inglotiers:ticket-unclaim")
-    async def unclaim(self, interaction: discord.Interaction, button: discord.ui.Button):
-        await self.cog.ticket_action(interaction, "unclaim")
-
-    @discord.ui.button(label="Close", style=discord.ButtonStyle.danger, emoji="🔒", custom_id="inglotiers:ticket-close")
-    async def close(self, interaction: discord.Interaction, button: discord.ui.Button):
         await self.cog.ticket_action(interaction, "close")
 
 
@@ -728,7 +670,6 @@ class PvPClubTiersCog(commands.Cog):
         self.bot.add_view(QueueTestSessionView(self))
         self.bot.add_view(TesterApplicationPanelView(self))
         self.bot.add_view(TesterApplicationReviewView(self))
-        self.bot.add_view(TicketControlsView(self))
         self.bot.add_view(DuelInviteView(self))
         self.bot.add_view(MatchmakingPanelView(self))
         self.bot.add_view(MatchmakingQueueView(self))
@@ -2116,100 +2057,6 @@ class PvPClubTiersCog(commands.Cog):
             f"Player: {entry['username']} · Gamemode: {gamemode}",
             ephemeral=True,
         )
-
-    async def create_test_ticket(self, interaction, gamemode, username):
-        if not await self.require_db(interaction):
-            return
-        try:
-            username = clean_username(username)
-        except ValueError as exc:
-            await interaction.response.send_message(str(exc), ephemeral=True)
-            return
-        guild = interaction.guild
-        config = await self.setting(guild.id)
-        category = guild.get_channel(config.get("ticket_category_id", 0))
-        if not isinstance(category, discord.CategoryChannel):
-            await interaction.response.send_message("An administrator must run ?tiersetup first.", ephemeral=True)
-            return
-        player = await self.get_player(guild.id, interaction.user.id)
-        if player and player.get("tier_banned"):
-            await interaction.response.send_message("You are blocked from tier tests. Reason: " + player.get("tier_ban_reason", "No reason supplied"), ephemeral=True)
-            return
-        active = await self.db_call(self.tickets.find_one, {"guild_id": guild.id, "discord_id": interaction.user.id,
-                                                            "status": {"$in": ["open", "claimed"]}})
-        if active:
-            channel = guild.get_channel(active.get("channel_id", 0))
-            await interaction.response.send_message("You already have an active ticket: " + (channel.mention if channel else "ticket " + active["ticket_id"]), ephemeral=True)
-            return
-        tester_role_id = config.get("tester_roles", {}).get(gamemode)
-        tester_role = guild.get_role(int(tester_role_id)) if tester_role_id else None
-        # This server has requested public visibility for every channel.
-        # Everyone can read test tickets, while only the applicant, matching
-        # tester roles and staff can send messages. This also explicitly
-        # enables slash commands inside these channels.
-        overwrites = {
-            guild.default_role: discord.PermissionOverwrite(
-                view_channel=True,
-                send_messages=False,
-                read_message_history=True,
-                use_application_commands=True,
-            ),
-            interaction.user: discord.PermissionOverwrite(
-                view_channel=True,
-                send_messages=True,
-                read_message_history=True,
-                attach_files=True,
-                use_application_commands=True,
-            ),
-        }
-        if guild.me:
-            overwrites[guild.me] = discord.PermissionOverwrite(
-                view_channel=True, send_messages=True, manage_channels=True,
-                read_message_history=True, use_application_commands=True,
-            )
-        if tester_role:
-            overwrites[tester_role] = discord.PermissionOverwrite(
-                view_channel=True, send_messages=True, read_message_history=True,
-                use_application_commands=True,
-            )
-        for role in guild.roles:
-            if role.permissions.manage_messages or role.permissions.manage_guild:
-                overwrites[role] = discord.PermissionOverwrite(
-                    view_channel=True, send_messages=True, read_message_history=True,
-                    use_application_commands=True,
-                )
-        doc = {"ticket_id": uuid4().hex[:10], "guild_id": guild.id, "discord_id": interaction.user.id,
-               "username": username, "gamemode": gamemode, "status": "open", "created_at": datetime.now(timezone.utc),
-               "claimed_by": None}
-        try:
-            channel = await guild.create_text_channel(
-                f"tier-{mode_key(gamemode)[:12]}-{username.casefold()[:12]}",
-                category=category, overwrites=overwrites,
-                topic=f"PvPClubTiers test {doc['ticket_id']} • player {interaction.user.id}")
-            doc["channel_id"] = channel.id
-            # Compatibility with a legacy unique MongoDB index (channelId_1)
-            # that may still exist in older deployments. Keep both spellings
-            # populated until every existing database has been migrated.
-            doc["channelId"] = channel.id
-            await self.db_call(self.tickets.insert_one, doc)
-            await self.db_call(self.activity.insert_one, {"guild_id": guild.id, "kind": "ticket_opened",
-                               "username": username, "gamemode": gamemode, "discord_id": interaction.user.id,
-                               "created_at": datetime.now(timezone.utc)})
-        except Exception:
-            log.exception("Could not create PvPClubTiers ticket")
-            if "channel" in locals():
-                try:
-                    await channel.delete(reason="PvPClubTiers database write failed")
-                except discord.HTTPException:
-                    pass
-            await interaction.response.send_message("I couldn't create the ticket. Please contact staff.", ephemeral=True)
-            return
-        e = discord.Embed(title=f"🧪 {gamemode} tier test",
-                          description=(f"Welcome {interaction.user.mention}!\nMinecraft username: **{username}**\n"
-                                       f"Gamemode: **{gamemode}**\nA matching tester can claim this ticket."),
-                          colour=0x55DDEB)
-        await channel.send(content=interaction.user.mention, embed=e, view=TicketControlsView(self))
-        await interaction.response.send_message(f"Your private tier test ticket is ready: {channel.mention}", ephemeral=True)
 
     async def ticket_action(self, interaction, action):
         if not await self.require_db(interaction):
@@ -3731,16 +3578,6 @@ class PvPClubTiersCog(commands.Cog):
             return
         await self.db_call(self.duels.update_one, {"duel_id": duel_id}, {"$set": {"status": "cancelled"}})
         await interaction.response.send_message(f"Duel {duel_id} cancelled.")
-
-    @app_commands.command(name="claim", description="Claim the tier test ticket you're currently in.")
-    @app_commands.guild_only()
-    async def claim_command(self, interaction):
-        await self.ticket_action(interaction, "claim")
-
-    @app_commands.command(name="unclaim", description="Unclaim the tier test ticket you're currently in.")
-    @app_commands.guild_only()
-    async def unclaim_command(self, interaction):
-        await self.ticket_action(interaction, "unclaim")
 
     @app_commands.command(name="close", description="Close the tier test ticket you're currently in.")
     @app_commands.guild_only()
