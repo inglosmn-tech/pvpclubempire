@@ -1615,21 +1615,37 @@ class PvPClubTiersCog(commands.Cog):
 
         configured_roles = dict(tester_roles or config.get("tester_roles") or {})
         resolved_roles = {}
+        hierarchy_issues = []
         for mode in GAMEMODES:
             role_id = configured_roles.get(mode)
-            role = guild.get_role(int(role_id)) if role_id else None
-            role = role or discord.utils.get(guild.roles, name=f"{mode} Tester")
+            try:
+                role = guild.get_role(int(role_id)) if role_id else None
+            except (TypeError, ValueError):
+                role = None
+
+            expected_name = f"{mode} Tester".casefold()
+            if role is None:
+                role = next(
+                    (item for item in guild.roles if item.name.casefold() == expected_name),
+                    None,
+                )
             if role is None:
                 role = await guild.create_role(
                     name=f"{mode} Tester",
                     colour=discord.Colour(0x36C5D8),
                     reason=f"PvPClubTiers {mode} tester role",
                 )
-            if role >= bot_member.top_role:
-                raise PermissionError(
-                    f"My highest role must be above **{role.name}** before I can manage that tester role."
-                )
+
+            # Save every resolved role even when one is above the bot. The bot
+            # cannot manage that role until an admin moves the bot role higher,
+            # but setup should continue and must not leave later modes unmapped.
             resolved_roles[mode] = role.id
+            if role >= bot_member.top_role:
+                hierarchy_issues.append(role.name)
+                log.warning(
+                    "Tester role %s (%s) is not manageable: bot top role is %s (%s)",
+                    role.name, role.id, bot_member.top_role.name, bot_member.top_role.id,
+                )
 
         # Give each private session category a clean permission baseline. No tester
         # role or staff role is granted access here; the session channel grants access
@@ -1798,6 +1814,7 @@ class PvPClubTiersCog(commands.Cog):
                     "test_queue_channel_id": queue_channel.id,
                     "test_queue_modes": queue_modes,
                     "tester_roles": resolved_roles,
+                    "tester_role_hierarchy_issues": hierarchy_issues,
                     "setup_at": datetime.now(timezone.utc),
                 },
                 "$unset": {
@@ -1929,6 +1946,14 @@ class PvPClubTiersCog(commands.Cog):
             await self.ensure_tier_info_panel(guild)
             await self.ensure_leaderboard_panel(guild)
             await self.ensure_matchmaking_panel(guild)
+            setup_config = await self.setting(guild.id)
+            hierarchy_issues = setup_config.get("tester_role_hierarchy_issues") or []
+            hierarchy_notice = (
+                "\n⚠️ **Role hierarchy:** Move the bot's highest role above: "
+                + ", ".join(f"**{name}**" for name in hierarchy_issues)
+                + ". Tester roles are registered, but I cannot assign them until you do."
+                if hierarchy_issues else ""
+            )
             await ctx.send(
                 "✅ **PvPClubTiers setup complete!**\n"
                 f"• {len(TIERS)} shared tier roles checked/created.\n"
@@ -1947,6 +1972,7 @@ class PvPClubTiersCog(commands.Cog):
                 "Testers open their own gamemode queue from the queue panel. "
                 "When a tester starts the next player, the bot creates a private session "
                 "visible only to that player, the assigned tester and the bot."
+                + hierarchy_notice
             )
         except discord.Forbidden:
             await ctx.send("I need Manage Roles, Manage Channels, View Channels and Send Messages to finish setup.")
@@ -2014,18 +2040,56 @@ class PvPClubTiersCog(commands.Cog):
             return
 
         config = await self.setting(guild.id)
-        role_ids = config.get("tester_roles", {})
+        role_ids = dict(config.get("tester_roles") or {})
         missing_modes = []
+        hierarchy_modes = []
+        role_map_changed = False
         for mode in GAMEMODES:
             role_id = role_ids.get(mode)
-            role = guild.get_role(int(role_id)) if role_id else None
-            if role is None or role >= bot_member.top_role:
+            try:
+                role = guild.get_role(int(role_id)) if role_id else None
+            except (TypeError, ValueError):
+                role = None
+
+            # Repair stale/missing database IDs by matching the actual role name.
+            if role is None:
+                expected_name = f"{mode} Tester".casefold()
+                role = next(
+                    (item for item in guild.roles if item.name.casefold() == expected_name),
+                    None,
+                )
+            if role is None:
                 missing_modes.append(mode)
-        if missing_modes:
-            await ctx.reply(
-                "Some gamemode tester roles are missing or above my highest role. "
-                "Run ?tiersetup first and move my bot role above the tester roles."
+                continue
+
+            if role_ids.get(mode) != role.id:
+                role_ids[mode] = role.id
+                role_map_changed = True
+            if role >= bot_member.top_role:
+                hierarchy_modes.append(role.name)
+
+        if role_map_changed:
+            await self.db_call(
+                self.settings.update_one,
+                {"guild_id": guild.id},
+                {"$set": {"tester_roles": role_ids}},
+                upsert=True,
             )
+
+        if missing_modes or hierarchy_modes:
+            problems = []
+            if missing_modes:
+                problems.append(
+                    "Missing roles: " + ", ".join(f"**{mode} Tester**" for mode in missing_modes) + "."
+                )
+            if hierarchy_modes:
+                problems.append(
+                    "Roles above my highest role: " + ", ".join(f"**{name}**" for name in hierarchy_modes) + ". "
+                    "Move my bot role above these roles in Server Settings → Roles."
+                )
+            if missing_modes:
+                problems.append("Run ?tiersetup to create and register missing roles.")
+            await ctx.reply("I can't configure tester applications yet. " + " ".join(problems))
             return
 
         for channel in (ctx.channel, reviewchannel):
