@@ -1494,12 +1494,45 @@ class PvPClubTiersCog(commands.Cog):
 
         config = await self.setting(guild.id)
         panel = None
-        message_id = config.get("test_request_panel_message_id")
+        message_id = config.get("test_request_panel_message_id") or config.get("request_panel_message_id")
         if message_id:
             try:
                 panel = await channel.fetch_message(int(message_id))
             except (discord.NotFound, discord.Forbidden, discord.HTTPException, ValueError):
                 panel = None
+
+        # Older setups did not always keep the request panel message ID in the
+        # current database field. Find the existing bot panel by its embed title
+        # or persistent Sign Up button so ?v3 edits the posted message in place.
+        if panel is None and self.bot.user is not None:
+            try:
+                async for candidate in channel.history(limit=200, oldest_first=False):
+                    if candidate.author.id != self.bot.user.id:
+                        continue
+                    has_signup_button = any(
+                        getattr(component, "custom_id", None) == "inglotiers:test-queue:join"
+                        for action_row in candidate.components
+                        for component in action_row.children
+                    )
+                    has_request_title = any(
+                        embed.title
+                        and (
+                            "request a tier test" in embed.title.casefold()
+                            or "sign up for a tier test" in embed.title.casefold()
+                        )
+                        for embed in candidate.embeds
+                    )
+                    if has_signup_button or has_request_title:
+                        panel = candidate
+                        log.info(
+                            "Found existing PvPClubTiers signup panel %s in channel %s; reusing it",
+                            panel.id,
+                            channel.id,
+                        )
+                        break
+            except (discord.Forbidden, discord.HTTPException):
+                log.exception("Could not search for the existing signup panel in channel %s", channel.id)
+
         embed = discord.Embed(
             title="📥 Sign Up for a Tier Test",
             description=(
@@ -1521,7 +1554,12 @@ class PvPClubTiersCog(commands.Cog):
         )
         embed.set_footer(text="One Minecraft IGN • Multiple gamemode waitlists")
         if panel:
-            await panel.edit(embed=embed, view=TestQueuePanelView(self))
+            await panel.edit(
+                content=None,
+                embed=embed,
+                view=TestQueuePanelView(self),
+                allowed_mentions=discord.AllowedMentions.none(),
+            )
         else:
             panel = await channel.send(
                 embed=embed,
