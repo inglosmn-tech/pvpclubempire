@@ -361,13 +361,13 @@ class LevelingCog(commands.Cog):
             else:
                 if role.id in generated_role_ids and role.name in LEGACY_LEVEL_ROLE_NAMES:
                     try:
-                        await role.edit(
+                        role = await role.edit(
                             name=name, colour=discord.Colour(color),
                             reason="Use neutral leveling role name",
                         )
                     except discord.HTTPException:
                         log.warning("Could not rename legacy level role %s in guild %s", role.id, guild.id)
-                roles_existing.append(name)
+                roles_existing.append(role.name)
             role_map[str(milestone)] = role.id
 
         config.setdefault("role_mode", "replace")
