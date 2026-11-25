@@ -671,6 +671,7 @@ class TesterQueueControlsView(discord.ui.View):
         state = bool((modes.get(mode_key(self.selected_gamemode)) or {}).get("open", False))
         self.queue_states[self.selected_gamemode] = state
         self.apply_button_state()
+        self.refresh_selector_options()
 
     def status_message(self) -> str:
         mode = self.selected_gamemode
@@ -685,6 +686,23 @@ class TesterQueueControlsView(discord.ui.View):
         start_note = "You can start the next test now." if is_open else "Start Next Test is disabled until this queue is open."
         return f"Selected **{mode}** — {status}. {next_action} {start_note}"
 
+    def refresh_selector_options(self):
+        selector = next(
+            (item for item in self.children if isinstance(item, discord.ui.Select)),
+            None,
+        )
+        if selector is None:
+            return
+        selector.options = [
+            discord.SelectOption(
+                label=mode,
+                value=mode,
+                description=f"Queue is {'OPEN' if self.queue_states.get(mode, False) else 'CLOSED'}",
+                emoji=MODE_EMOJIS.get(mode),
+            )
+            for mode in self.allowed_modes
+        ]
+
     @discord.ui.button(
         label="Select a gamemode",
         style=discord.ButtonStyle.secondary,
@@ -696,15 +714,21 @@ class TesterQueueControlsView(discord.ui.View):
         if self.selected_gamemode is None:
             await interaction.response.send_message("Select a gamemode first.", ephemeral=True)
             return
+        if not await self.cog.require_db(interaction):
+            return
+
         mode = self.selected_gamemode
-        await self.cog.toggle_test_queue(interaction, mode)
+        # Defer as a component-message update so the ephemeral controls themselves
+        # can be edited with their new live Open/Close button state.
+        await interaction.response.defer()
+        result_message = await self.cog.toggle_test_queue(interaction, mode)
         await self.refresh_selected_mode(interaction.guild)
-        if interaction.message:
-            await interaction.message.edit(
-                content=self.status_message(),
-                view=self,
-                allowed_mentions=discord.AllowedMentions.none(),
-            )
+        self.refresh_selector_options()
+        await interaction.edit_original_response(
+            content=result_message + "\n\n" + self.status_message(),
+            view=self,
+            allowed_mentions=discord.AllowedMentions.none(),
+        )
 
     @discord.ui.button(
         label="Start Next Test",
@@ -717,15 +741,7 @@ class TesterQueueControlsView(discord.ui.View):
         if self.selected_gamemode is None:
             await interaction.response.send_message("Select a gamemode first.", ephemeral=True)
             return
-        mode = self.selected_gamemode
-        await self.cog.start_next_test(interaction, mode)
-        await self.refresh_selected_mode(interaction.guild)
-        if interaction.message:
-            await interaction.message.edit(
-                content=self.status_message(),
-                view=self,
-                allowed_mentions=discord.AllowedMentions.none(),
-            )
+        await self.cog.start_next_test(interaction, self.selected_gamemode)
 
 
 class QueueTestSessionView(discord.ui.View):
@@ -2967,16 +2983,11 @@ class PvPClubTiersCog(commands.Cog):
     async def leave_all_test_waitlists(self, interaction: discord.Interaction):
         await self.leave_test_queue(interaction, None)
 
-    async def toggle_test_queue(self, interaction: discord.Interaction, gamemode: str):
-        if not await self.require_db(interaction):
-            return
-        await interaction.response.defer(ephemeral=True, thinking=True)
+    async def toggle_test_queue(self, interaction: discord.Interaction, gamemode: str) -> str:
         if gamemode not in GAMEMODES:
-            await interaction.followup.send("That gamemode is not supported.", ephemeral=True)
-            return
+            return "That gamemode is not supported."
         if not isinstance(interaction.user, discord.Member):
-            await interaction.followup.send("Use tester controls inside the server.", ephemeral=True)
-            return
+            return "Use tester controls inside the server."
 
         # Queue joins use this same lock, so a player cannot slip into a queue
         # at the same time a tester closes it.
@@ -2999,11 +3010,7 @@ class PvPClubTiersCog(commands.Cog):
                 )
 
         if not authorised:
-            await interaction.followup.send(
-                f"Only a member with the **{gamemode} Tester** role can open or close this queue.",
-                ephemeral=True,
-            )
-            return
+            return f"Only a member with the **{gamemode} Tester** role can open or close this queue."
 
         if now_open:
             await self.add_global_signups_to_queue(interaction.guild, gamemode)
@@ -3037,10 +3044,9 @@ class PvPClubTiersCog(commands.Cog):
                         ),
                         allowed_mentions=discord.AllowedMentions(users=members),
                     )
-        await interaction.followup.send(
-            f"The {gamemode} queue is now open. Players on the waitlist have been notified."
-            if now_open else f"The {gamemode} queue is now closed. Players already waiting will remain queued.",
-            ephemeral=True,
+        return (
+            f"The **{gamemode}** queue is now **OPEN**. Players on the waitlist have been notified."
+            if now_open else f"The **{gamemode}** queue is now **CLOSED**. Players already waiting will remain queued."
         )
 
     async def start_next_test(self, interaction: discord.Interaction, gamemode: str):
