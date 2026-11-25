@@ -3667,6 +3667,22 @@ class PvPClubTiersCog(commands.Cog):
     async def before_queue_recovery_watcher(self):
         await self.bot.wait_until_ready()
 
+    @tasks.loop(minutes=5)
+    async def leaderboard_refresh_watcher(self):
+        if self.db is None:
+            return
+        for guild in list(self.bot.guilds):
+            try:
+                config = await self.setting(guild.id)
+                if config.get("leaderboard_channel_id"):
+                    await self.ensure_leaderboard_panel(guild)
+            except Exception:
+                log.exception("Could not refresh tier leaderboard in guild %s", guild.id)
+
+    @leaderboard_refresh_watcher.before_loop
+    async def before_leaderboard_refresh_watcher(self):
+        await self.bot.wait_until_ready()
+
     @commands.Cog.listener()
     async def on_ready(self):
         if self.db is None:
@@ -3678,6 +3694,11 @@ class PvPClubTiersCog(commands.Cog):
                     await self.ensure_matchmaking_panel(guild)
                 if config.get("test_queue_channel_id"):
                     await self.ensure_test_queue_panel(guild)
+                    await self.ensure_test_request_panel(guild)
+                if config.get("tier_info_channel_id"):
+                    await self.ensure_tier_info_panel(guild)
+                if config.get("leaderboard_channel_id"):
+                    await self.ensure_leaderboard_panel(guild)
                 await self.recover_interrupted_test_starts(guild)
                 # A Mongo transaction is all-or-nothing, so stale resolving states
                 # can safely be sent to staff review after a restart.
