@@ -147,7 +147,7 @@ def total_tier_points(tiers: dict | None) -> int:
 
 def safe_player(player: dict) -> dict:
     stored_tiers = player.get("tiers", {}) or {}
-    # Only the currently supported nine gamemodes should be exposed to clients.
+    # Only currently supported PvPClubTiers gamemodes should be exposed to clients.
     tiers = {
         mode: tier for mode, tier in stored_tiers.items()
         if mode in GAMEMODES and tier in TIERS
@@ -189,7 +189,7 @@ footer{max-width:1180px;margin:auto;padding:20px 22px 35px;color:var(--muted);fo
 </style></head><body><header><div class="brand"><div class="logo">P</div><div><strong>PvPClubTiers</strong><small>EU Minecraft PvP • mcpvp.club</small></div></div><span class="pill">PLAYER RANKINGS</span></header>
 <main><section class="hero"><div class="eyebrow">The community tier list</div><h1>Find your place<br>on the leaderboard.</h1><p>Browse player tiers across every supported gamemode, compare profiles and follow recent tier changes.</p></section>
 <section class="panel"><div class="toolbar"><select id="mode"><option value="">Overall ranking</option></select><input id="search" placeholder="Search Minecraft username…"><button id="searchBtn">Search</button></div>
-<div class="stats"><div class="stat"><small>Ranked players</small><strong id="players">—</strong></div><div class="stat"><small>Gamemodes</small><strong>9</strong></div><div class="stat"><small>Tier levels</small><strong>10</strong></div></div>
+<div class="stats"><div class="stat"><small>Ranked players</small><strong id="players">—</strong></div><div class="stat"><small>Gamemodes</small><strong>11</strong></div><div class="stat"><small>Tier levels</small><strong>10</strong></div></div>
 <div style="overflow-x:auto"><table><thead><tr><th>#</th><th>Player</th><th>Best mode</th><th>Best tier</th></tr></thead><tbody id="rows"><tr><td colspan="4" class="empty">Loading leaderboard…</td></tr></tbody></table></div></section>
 <section class="panel profile" id="profile"><div class="eyebrow">Player profile</div><h2 id="profileName"></h2><div class="muted" id="profileBest"></div><div class="profile-grid" id="profileModes"></div><h3>Recent tier history</h3><div id="profileHistory" class="muted"></div></section></main><footer>PvPClubTiers • EU only • mcpvp.club</footer>
 <script>
