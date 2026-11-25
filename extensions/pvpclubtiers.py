@@ -821,6 +821,301 @@ class PvPClubTiersCog(commands.Cog):
             overwrite[guild.me] = discord.PermissionOverwrite(view_channel=True, send_messages=True, read_message_history=True)
         return await guild.create_text_channel(name, category=category, overwrites=overwrite, reason="PvPClubTiers setup")
 
+    async def build_test_queue_embed(self, guild: discord.Guild) -> discord.Embed:
+        config = await self.setting(guild.id)
+        modes = config.get("test_queue_modes") or {}
+        embed = discord.Embed(
+            title="PvPClubTiers • Test Queues",
+            description=(
+                "Join the queue for the gamemode you want tested. A tester for that gamemode "
+                "will open a private test session when they are ready. Only you, that assigned "
+                "tester, and the bot can view the session channel."
+            ),
+            colour=0x55DDEB,
+        )
+        for mode in GAMEMODES:
+            mode_config = modes.get(mode_key(mode), {})
+            is_open = bool(mode_config.get("open", False))
+            count = await self.db_call(
+                self.test_queue_entries.count_documents,
+                {"guild_id": guild.id, "gamemode": mode, "status": "waiting"},
+            )
+            embed.add_field(
+                name=mode,
+                value=f"{'🟢 OPEN' if is_open else '🔴 CLOSED'} · **{count}** waiting",
+                inline=True,
+            )
+        embed.set_footer(text="Join a queue • Leave whenever you are waiting • Testers manage their own modes")
+        return embed
+
+    async def ensure_test_queue_panel(self, guild: discord.Guild):
+        config = await self.setting(guild.id)
+        channel_id = config.get("test_queue_channel_id")
+        channel = guild.get_channel(int(channel_id)) if channel_id else None
+        public_category = guild.get_channel(int(config.get("public_category_id", 0) or 0))
+        if not isinstance(public_category, discord.CategoryChannel):
+            public_category = discord.utils.get(guild.categories, name="PVPCLUBTIERS")
+        if not isinstance(channel, discord.TextChannel):
+            channel = discord.utils.get(guild.text_channels, name="test-queues")
+        if channel is None:
+            if not isinstance(public_category, discord.CategoryChannel):
+                return None
+            channel = await guild.create_text_channel(
+                "test-queues",
+                category=public_category,
+                overwrites={
+                    guild.default_role: discord.PermissionOverwrite(
+                        view_channel=True, send_messages=False, read_message_history=True,
+                    ),
+                    guild.me: discord.PermissionOverwrite(
+                        view_channel=True, send_messages=True, embed_links=True,
+                        read_message_history=True, manage_messages=True,
+                    ),
+                },
+                reason="PvPClubTiers test queue panel",
+            )
+        else:
+            queue_overwrites = {
+                guild.default_role: discord.PermissionOverwrite(
+                    view_channel=True, send_messages=False, read_message_history=True,
+                ),
+            }
+            if guild.me:
+                queue_overwrites[guild.me] = discord.PermissionOverwrite(
+                    view_channel=True, send_messages=True, embed_links=True,
+                    read_message_history=True, manage_messages=True,
+                )
+            await channel.edit(
+                name="test-queues",
+                category=public_category if isinstance(public_category, discord.CategoryChannel) else channel.category,
+                overwrites=queue_overwrites,
+                reason="PvPClubTiers test queue panel permissions",
+            )
+
+        panel = None
+        message_id = config.get("test_queue_panel_message_id")
+        if message_id:
+            try:
+                panel = await channel.fetch_message(int(message_id))
+            except (discord.NotFound, discord.Forbidden, discord.HTTPException, ValueError):
+                panel = None
+        embed = await self.build_test_queue_embed(guild)
+        if panel:
+            await panel.edit(embed=embed, view=TestQueuePanelView(self))
+        else:
+            panel = await channel.send(
+                embed=embed,
+                view=TestQueuePanelView(self),
+                allowed_mentions=discord.AllowedMentions.none(),
+            )
+            await self.db_call(self.settings.update_one, {"guild_id": guild.id}, {
+                "$set": {"test_queue_panel_message_id": panel.id, "test_queue_channel_id": channel.id}
+            }, upsert=True)
+        return channel
+
+    async def refresh_test_queue_panel(self, guild: discord.Guild):
+        try:
+            await self.ensure_test_queue_panel(guild)
+        except (discord.Forbidden, discord.HTTPException):
+            log.exception("Could not refresh test queue panel in guild %s", guild.id)
+
+    async def reset_test_queue_setup(
+        self,
+        guild: discord.Guild,
+        *,
+        public_category: discord.CategoryChannel | None = None,
+        tester_roles: dict | None = None,
+    ):
+        if self.db is None:
+            raise RuntimeError("MongoDB is not connected. Add MONGO_URI in Render and restart the bot.")
+        bot_member = guild.me
+        if not bot_member or not bot_member.guild_permissions.manage_channels or not bot_member.guild_permissions.manage_roles:
+            raise PermissionError("I need Manage Channels and Manage Roles to rebuild the test queues.")
+
+        config = await self.setting(guild.id)
+        if not isinstance(public_category, discord.CategoryChannel):
+            category_id = config.get("public_category_id")
+            public_category = guild.get_channel(int(category_id)) if category_id else None
+        if not isinstance(public_category, discord.CategoryChannel):
+            public_category = await self.find_category(guild, "PVPCLUBTIERS")
+
+        configured_roles = dict(tester_roles or config.get("tester_roles") or {})
+        resolved_roles = {}
+        for mode in GAMEMODES:
+            role_id = configured_roles.get(mode)
+            role = guild.get_role(int(role_id)) if role_id else None
+            role = role or discord.utils.get(guild.roles, name=f"{mode} Tester")
+            if role is None:
+                role = await guild.create_role(
+                    name=f"{mode} Tester",
+                    colour=discord.Colour(0x36C5D8),
+                    reason=f"PvPClubTiers {mode} tester role",
+                )
+            if role >= bot_member.top_role:
+                raise PermissionError(
+                    f"My highest role must be above **{role.name}** before I can manage that tester role."
+                )
+            resolved_roles[mode] = role.id
+
+        # Give each private session category a clean permission baseline. No tester
+        # role or staff role is granted access here; the session channel grants access
+        # only to the player, the one tester assigned to that session, and the bot.
+        private_overwrites = {
+            guild.default_role: discord.PermissionOverwrite(
+                view_channel=False,
+                send_messages=False,
+                read_message_history=False,
+                use_application_commands=False,
+            ),
+            bot_member: discord.PermissionOverwrite(
+                view_channel=True,
+                send_messages=True,
+                manage_channels=True,
+                read_message_history=True,
+                use_application_commands=True,
+            ),
+        }
+        session_category_id = config.get("test_session_category_id")
+        session_category = guild.get_channel(int(session_category_id)) if session_category_id else None
+        if not isinstance(session_category, discord.CategoryChannel):
+            session_category = discord.utils.get(guild.categories, name="TEST SESSIONS")
+        if session_category is None:
+            session_category = await guild.create_category(
+                "TEST SESSIONS",
+                overwrites=private_overwrites,
+                reason="Private PvPClubTiers tester sessions",
+            )
+        else:
+            await session_category.edit(
+                name="TEST SESSIONS",
+                overwrites=private_overwrites,
+                reason="Reset private PvPClubTiers session permissions",
+            )
+
+        # Create or repair the public queue panel channel.
+        queue_channel_id = config.get("test_queue_channel_id")
+        queue_channel = guild.get_channel(int(queue_channel_id)) if queue_channel_id else None
+        if not isinstance(queue_channel, discord.TextChannel):
+            queue_channel = discord.utils.get(guild.text_channels, name="test-queues")
+        queue_overwrites = {
+            guild.default_role: discord.PermissionOverwrite(
+                view_channel=True, send_messages=False, read_message_history=True,
+            ),
+            bot_member: discord.PermissionOverwrite(
+                view_channel=True, send_messages=True, embed_links=True,
+                read_message_history=True, manage_messages=True,
+            ),
+        }
+        if queue_channel is None:
+            queue_channel = await guild.create_text_channel(
+                "test-queues",
+                category=public_category,
+                overwrites=queue_overwrites,
+                reason="PvPClubTiers public test queues",
+            )
+        else:
+            await queue_channel.edit(
+                name="test-queues",
+                category=public_category,
+                overwrites=queue_overwrites,
+                reason="Reset public PvPClubTiers queue permissions",
+            )
+
+        # Remove only the old PvPClubTiers request panel and legacy test ticket
+        # channels. Results, activity, general support tickets, logs and other
+        # server channels are intentionally left untouched.
+        legacy_category_id = config.get("ticket_category_id")
+        legacy_category = guild.get_channel(int(legacy_category_id)) if legacy_category_id else None
+        if not isinstance(legacy_category, discord.CategoryChannel):
+            legacy_category = discord.utils.get(guild.categories, name="TIER TEST TICKETS")
+        legacy_ticket_docs = await self.db_call(
+            lambda: list(self.tickets.find({
+                "guild_id": guild.id,
+                "session_type": {"$ne": "queue"},
+            }))
+        )
+        old_channel_ids = set()
+        for ticket in legacy_ticket_docs:
+            channel_id = ticket.get("channel_id") or ticket.get("channelId")
+            if channel_id:
+                old_channel_ids.add(int(channel_id))
+        if isinstance(legacy_category, discord.CategoryChannel):
+            old_channel_ids.update(
+                channel.id for channel in list(legacy_category.channels)
+                if isinstance(channel, discord.TextChannel)
+            )
+
+        request_channel_id = config.get("request_channel_id")
+        request_channel = guild.get_channel(int(request_channel_id)) if request_channel_id else None
+        if not isinstance(request_channel, discord.TextChannel):
+            request_channel = discord.utils.get(guild.text_channels, name="request-test")
+        if isinstance(request_channel, discord.TextChannel) and request_channel.id != queue_channel.id:
+            if request_channel.name == "request-test":
+                old_channel_ids.add(request_channel.id)
+
+        deleted_old_channels = 0
+        for old_channel_id in old_channel_ids:
+            old_channel = guild.get_channel(old_channel_id)
+            if isinstance(old_channel, discord.TextChannel) and old_channel.id != queue_channel.id:
+                try:
+                    await old_channel.delete(reason="Replacing legacy PvPClubTiers test tickets with queues")
+                    deleted_old_channels += 1
+                except (discord.Forbidden, discord.HTTPException):
+                    log.exception("Could not delete legacy PvPClubTiers test channel %s", old_channel_id)
+
+        if legacy_ticket_docs:
+            await self.db_call(
+                self.tickets.update_many,
+                {"guild_id": guild.id, "session_type": {"$ne": "queue"}},
+                {"$set": {
+                    "status": "closed",
+                    "migration_note": "Legacy public test ticket retired by ?resetuptest",
+                    "closed_at": datetime.now(timezone.utc),
+                    "closed_by": bot_member.id,
+                }},
+            )
+        if isinstance(legacy_category, discord.CategoryChannel) and not legacy_category.channels:
+            try:
+                await legacy_category.delete(reason="Retired legacy PvPClubTiers ticket category")
+            except (discord.Forbidden, discord.HTTPException):
+                log.exception("Could not delete legacy tier ticket category in guild %s", guild.id)
+
+        # A reset starts with empty queues and all gamemodes closed. Active queue
+        # sessions are not deleted when setup is rerun.
+        await self.db_call(
+            self.test_queue_entries.update_many,
+            {"guild_id": guild.id, "status": "waiting"},
+            {"$set": {
+                "status": "cancelled",
+                "cancelled_at": datetime.now(timezone.utc),
+                "cancel_reason": "Test queues were reset by server staff",
+            }},
+        )
+        queue_modes = {mode_key(mode): {"open": False} for mode in GAMEMODES}
+        await self.db_call(
+            self.settings.update_one,
+            {"guild_id": guild.id},
+            {
+                "$set": {
+                    "guild_id": guild.id,
+                    "public_category_id": public_category.id,
+                    "test_session_category_id": session_category.id,
+                    "test_queue_channel_id": queue_channel.id,
+                    "test_queue_modes": queue_modes,
+                    "tester_roles": resolved_roles,
+                    "setup_at": datetime.now(timezone.utc),
+                },
+                "$unset": {
+                    "ticket_category_id": "",
+                    "request_channel_id": "",
+                    "request_panel_message_id": "",
+                },
+            },
+            upsert=True,
+        )
+        await self.ensure_test_queue_panel(guild)
+        return queue_channel, session_category, resolved_roles, deleted_old_channels
+
     @commands.command(name="tiersetup")
     @commands.guild_only()
     @commands.has_guild_permissions(manage_guild=True)
@@ -829,30 +1124,26 @@ class PvPClubTiersCog(commands.Cog):
             await ctx.reply("Add MONGO_URI to Render Environment and restart the bot before running tier setup.")
             return
         guild = ctx.guild
-        await ctx.reply("Setting up PvPClubTiers: checking roles, categories and test channels…")
+        await ctx.reply("Setting up PvPClubTiers roles, queues and support channels…")
         try:
             tier_roles = {}
             for tier in reversed(TIERS):
                 role = discord.utils.get(guild.roles, name=tier)
                 if role is None:
-                    role = await guild.create_role(name=tier, colour=discord.Colour(COLOURS[tier]),
-                                                   reason="PvPClubTiers shared tier roles")
+                    role = await guild.create_role(
+                        name=tier,
+                        colour=discord.Colour(COLOURS[tier]),
+                        reason="PvPClubTiers shared tier roles",
+                    )
                 tier_roles[tier] = role.id
-            tester_roles = {}
-            for mode in GAMEMODES:
-                name = f"{mode} Tester"
-                role = discord.utils.get(guild.roles, name=name)
-                if role is None:
-                    role = await guild.create_role(name=name, colour=discord.Colour(0x36C5D8),
-                                                   reason=f"PvPClubTiers {mode} tester role")
-                tester_roles[mode] = role.id
+
             public_category = await self.find_category(guild, "PVPCLUBTIERS")
-            ticket_category = await self.find_category(guild, "TIER TEST TICKETS")
-            request = await self.find_channel(guild, "request-test", public_category, True)
+            queue_channel, session_category, tester_roles, deleted = await self.reset_test_queue_setup(
+                guild, public_category=public_category,
+            )
             results = await self.find_channel(guild, "results", public_category)
             activity = await self.find_channel(guild, "tier-activity", public_category)
             logs_category = await self.find_category(guild, "PVPCLUBTIERS LOGS")
-            # Ticket logs are visible to everyone, but read-only for regular members.
             log_overwrites = {
                 guild.default_role: discord.PermissionOverwrite(
                     view_channel=True, send_messages=False, read_message_history=True,
@@ -860,7 +1151,7 @@ class PvPClubTiersCog(commands.Cog):
             }
             if guild.me:
                 log_overwrites[guild.me] = discord.PermissionOverwrite(
-                    view_channel=True, send_messages=True, read_message_history=True
+                    view_channel=True, send_messages=True, read_message_history=True,
                 )
             for role in guild.roles:
                 if role.permissions.manage_guild or role.permissions.manage_messages:
@@ -870,54 +1161,94 @@ class PvPClubTiersCog(commands.Cog):
                     )
             logs = discord.utils.get(guild.text_channels, name="ticket-logs")
             if logs:
-                await logs.edit(category=logs_category, overwrites=log_overwrites,
-                                reason="PvPClubTiers private ticket logs")
+                await logs.edit(
+                    category=logs_category,
+                    overwrites=log_overwrites,
+                    reason="PvPClubTiers test event logs",
+                )
             else:
                 logs = await guild.create_text_channel(
-                    "ticket-logs", category=logs_category, overwrites=log_overwrites,
-                    reason="PvPClubTiers private ticket logs"
+                    "ticket-logs",
+                    category=logs_category,
+                    overwrites=log_overwrites,
+                    reason="PvPClubTiers test event logs",
                 )
             matchmaking = await self.find_channel(guild, "matchmaking", public_category)
-            await self.db_call(self.settings.update_one, {"guild_id": guild.id}, {"$set": {
-                "guild_id": guild.id, "tier_roles": tier_roles, "tester_roles": tester_roles,
-                "public_category_id": public_category.id, "ticket_category_id": ticket_category.id,
-                "request_channel_id": request.id, "results_channel_id": results.id,
-                "activity_channel_id": activity.id, "logs_channel_id": logs.id,
-                "matchmaking_channel_id": matchmaking.id, "website_public": True,
-                "setup_at": datetime.now(timezone.utc)}}, upsert=True)
+            await self.db_call(
+                self.settings.update_one,
+                {"guild_id": guild.id},
+                {"$set": {
+                    "guild_id": guild.id,
+                    "tier_roles": tier_roles,
+                    "tester_roles": tester_roles,
+                    "public_category_id": public_category.id,
+                    "test_session_category_id": session_category.id,
+                    "test_queue_channel_id": queue_channel.id,
+                    "results_channel_id": results.id,
+                    "activity_channel_id": activity.id,
+                    "logs_channel_id": logs.id,
+                    "matchmaking_channel_id": matchmaking.id,
+                    "website_public": True,
+                    "setup_at": datetime.now(timezone.utc),
+                }},
+                upsert=True,
+            )
+            await self.ensure_test_queue_panel(guild)
             await self.ensure_matchmaking_panel(guild)
-            config = await self.setting(guild.id)
-            panel = None
-            if config.get("request_panel_message_id"):
-                try:
-                    panel = await request.fetch_message(int(config["request_panel_message_id"]))
-                except (discord.NotFound, discord.Forbidden, discord.HTTPException, ValueError):
-                    pass
-            e = discord.Embed(title="🧪 Request a Tier Test",
-                              description=("Click below to open your own private test ticket.\n\n"
-                                           "1. Choose a gamemode.\n2. Enter your Minecraft username.\n"
-                                           "3. Wait for a tester with the matching gamemode role.\n\n"
-                                           "There are no testing cooldowns. You can request another test once your previous ticket is closed."),
-                              colour=0x55DDEB)
-            e.set_footer(text="PvPClubTiers • EU • mcpvp.club")
-            if panel:
-                await panel.edit(embed=e, view=TierRequestPanelView(self))
-            else:
-                panel = await request.send(embed=e, view=TierRequestPanelView(self))
-                await self.db_call(self.settings.update_one, {"guild_id": guild.id},
-                                   {"$set": {"request_panel_message_id": panel.id}})
             await ctx.send(
                 "✅ **PvPClubTiers setup complete!**\n"
-                "• 10 shared tier roles checked/created (LT5 → HT1).\n"
+                f"• {len(TIERS)} shared tier roles checked/created.\n"
                 f"• {len(GAMEMODES)} gamemode tester roles checked/created.\n"
-                f"• Requests: {request.mention}\n• Results: {results.mention}\n"
-                f"• Activity: {activity.mention}\n• Logs: {logs.mention}\n• Matchmaking: {matchmaking.mention}\n\n"
-                "Assign tester roles to trusted members and put my bot role above the PvPClubTiers roles.")
+                f"• Test queues: {queue_channel.mention}\n"
+                f"• Private test sessions: **{session_category.name}**\n"
+                f"• Results: {results.mention}\n"
+                f"• Activity: {activity.mention}\n"
+                f"• Logs: {logs.mention}\n"
+                f"• Matchmaking: {matchmaking.mention}\n"
+                f"• Retired old test channels: **{deleted}**\n\n"
+                "Testers open their own gamemode queue from the queue panel. "
+                "When a tester starts the next player, the bot creates a private session "
+                "visible only to that player, the assigned tester and the bot."
+            )
         except discord.Forbidden:
             await ctx.send("I need Manage Roles, Manage Channels, View Channels and Send Messages to finish setup.")
         except Exception:
             log.exception("PvPClubTiers setup failed")
-            await ctx.send("PvPClubTiers setup failed. Check the log and my Discord permissions.")
+            await ctx.send("PvPClubTiers setup failed. Check the Render logs and my Discord permissions.")
+
+    @commands.command(name="resetuptest")
+    @commands.guild_only()
+    @commands.has_guild_permissions(manage_guild=True)
+    async def resetuptest(self, ctx: commands.Context):
+        if self.db is None:
+            await ctx.reply("PvPClubTiers database is not connected. Check MONGO_URI in Render and restart the bot.")
+            return
+        try:
+            await ctx.reply("Rebuilding PvPClub test queues and removing the old public test-ticket setup…")
+            config = await self.setting(ctx.guild.id)
+            public_category_id = config.get("public_category_id")
+            public_category = ctx.guild.get_channel(int(public_category_id)) if public_category_id else None
+            if not isinstance(public_category, discord.CategoryChannel):
+                public_category = await self.find_category(ctx.guild, "PVPCLUBTIERS")
+            queue_channel, session_category, roles, deleted = await self.reset_test_queue_setup(
+                ctx.guild,
+                public_category=public_category,
+            )
+            await ctx.send(
+                "✅ **Test queues reset successfully.**\n"
+                f"• Queue panel: {queue_channel.mention}\n"
+                f"• Private sessions: **{session_category.name}**\n"
+                f"• Gamemode tester roles checked: **{len(roles)}**\n"
+                f"• Old test channels deleted: **{deleted}**\n"
+                "• All queues start closed. Testers can open only the gamemodes they test.\n"
+                "• New sessions are visible only to the queued player, their assigned tester and the bot.\n"
+                "• General support tickets, results, activity and server channels were not removed."
+            )
+        except discord.Forbidden:
+            await ctx.send("Discord denied a channel or role change. Check Manage Channels, Manage Roles and the bot role position.")
+        except Exception:
+            log.exception("?resetuptest failed in guild %s", ctx.guild.id)
+            await ctx.send("Test queue reset failed. The exact error is in the Render logs.")
 
     @commands.command(name="testerappsetup")
     @commands.guild_only()
