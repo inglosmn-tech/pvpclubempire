@@ -268,16 +268,30 @@ class TesterApplicationModal(discord.ui.Modal):
             label="Minecraft username", min_length=3, max_length=16, required=True,
             placeholder="Your in-game username",
         )
+        self.current_tier = discord.ui.TextInput(
+            label="Your current tier / rank",
+            min_length=2,
+            max_length=100,
+            required=True,
+            placeholder="Example: LT2 Sword, HT3 overall, or Unranked",
+        )
         self.experience = discord.ui.TextInput(
-            label="Previous testing experience", style=discord.TextStyle.paragraph,
-            max_length=500, required=False, placeholder="Optional",
+            label="Previous testing experience",
+            style=discord.TextStyle.paragraph,
+            max_length=500,
+            required=False,
+            placeholder="Optional",
         )
         self.reason = discord.ui.TextInput(
-            label="Why should we choose you?", style=discord.TextStyle.paragraph,
-            min_length=20, max_length=1000, required=True,
-            placeholder="Tell us why you would be a good tester",
+            label="Why would you be a good tester?",
+            style=discord.TextStyle.paragraph,
+            min_length=20,
+            max_length=1000,
+            required=True,
+            placeholder="Tell us why you would be fair and reliable",
         )
         self.add_item(self.minecraft_username)
+        self.add_item(self.current_tier)
         self.add_item(self.experience)
         self.add_item(self.reason)
 
@@ -287,7 +301,8 @@ class TesterApplicationModal(discord.ui.Modal):
         try:
             await self.cog.submit_tester_application(
                 interaction, self.gamemode, str(self.minecraft_username),
-                str(self.experience), str(self.reason), interaction_deferred=True,
+                str(self.current_tier), str(self.experience), str(self.reason),
+                interaction_deferred=True,
             )
         except Exception:
             log.exception("Unhandled tester application modal submission error for user %s", interaction.user.id)
@@ -2033,6 +2048,7 @@ class PvPClubTiersCog(commands.Cog):
         interaction: discord.Interaction,
         gamemode: str,
         minecraft_username: str,
+        current_tier: str,
         experience: str,
         reason: str,
         *,
@@ -2120,6 +2136,11 @@ class PvPClubTiersCog(commands.Cog):
                 application_embed.add_field(name="Gamemode", value=gamemode, inline=True)
                 application_embed.add_field(name="Minecraft username", value=minecraft_username, inline=True)
                 application_embed.add_field(
+                    name="Current tier / rank",
+                    value=(current_tier.strip() or "Not provided")[:100],
+                    inline=True,
+                )
+                application_embed.add_field(
                     name="Previous testing experience",
                     value=(experience.strip() or "Not provided")[:500],
                     inline=False,
@@ -2138,6 +2159,7 @@ class PvPClubTiersCog(commands.Cog):
                     "applicant_id": interaction.user.id,
                     "applicant_name": str(interaction.user),
                     "minecraft_username": minecraft_username,
+                    "current_tier": current_tier.strip()[:100],
                     "gamemode": gamemode,
                     "experience": experience.strip()[:500],
                     "reason": reason.strip()[:1000],
