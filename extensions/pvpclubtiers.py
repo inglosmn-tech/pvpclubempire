@@ -381,6 +381,118 @@ class TierRequestModal(discord.ui.Modal):
         await self.cog.create_test_ticket(interaction, self.gamemode, str(self.username))
 
 
+class TestQueueJoinSelect(discord.ui.Select):
+    def __init__(self, cog):
+        self.cog = cog
+        super().__init__(
+            placeholder="Choose the gamemode you want to join…",
+            min_values=1,
+            max_values=1,
+            options=[discord.SelectOption(label=mode, value=mode) for mode in GAMEMODES],
+            custom_id="inglotiers:test-queue:join-mode",
+        )
+
+    async def callback(self, interaction: discord.Interaction):
+        await interaction.response.send_modal(TestQueueJoinModal(self.cog, self.values[0]))
+
+
+class TestQueueJoinView(discord.ui.View):
+    def __init__(self, cog):
+        super().__init__(timeout=180)
+        self.add_item(TestQueueJoinSelect(cog))
+
+
+class TestQueueJoinModal(discord.ui.Modal):
+    def __init__(self, cog, gamemode: str):
+        super().__init__(title=f"Join {gamemode} test queue")
+        self.cog = cog
+        self.gamemode = gamemode
+        self.username = discord.ui.TextInput(
+            label="Minecraft username",
+            placeholder="Your Minecraft Java username",
+            min_length=3,
+            max_length=16,
+            required=True,
+        )
+        self.add_item(self.username)
+
+    async def on_submit(self, interaction: discord.Interaction):
+        await self.cog.join_test_queue(interaction, self.gamemode, str(self.username))
+
+
+class TesterQueueModeSelect(discord.ui.Select):
+    def __init__(self, parent):
+        self.parent_view = parent
+        super().__init__(
+            placeholder="Choose a gamemode you test…",
+            min_values=1,
+            max_values=1,
+            options=[discord.SelectOption(label=mode, value=mode) for mode in parent.allowed_modes],
+            custom_id="inglotiers:test-queue:tester-mode",
+        )
+
+    async def callback(self, interaction: discord.Interaction):
+        self.parent_view.selected_gamemode = self.values[0]
+        await interaction.response.edit_message(
+            content=f"Selected **{self.values[0]}**. Open or close its queue, or start the next player.",
+            view=self.parent_view,
+        )
+
+
+class TesterQueueControlsView(discord.ui.View):
+    def __init__(self, cog, allowed_modes: list[str]):
+        super().__init__(timeout=180)
+        self.cog = cog
+        self.allowed_modes = allowed_modes
+        self.selected_gamemode = allowed_modes[0]
+        self.add_item(TesterQueueModeSelect(self))
+
+    @discord.ui.button(label="Open / Close Queue", style=discord.ButtonStyle.primary, emoji="🔄")
+    async def toggle_queue(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await self.cog.toggle_test_queue(interaction, self.selected_gamemode)
+
+    @discord.ui.button(label="Start Next Test", style=discord.ButtonStyle.success, emoji="🧪")
+    async def start_next(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await self.cog.start_next_test(interaction, self.selected_gamemode)
+
+
+class TestQueuePanelView(discord.ui.View):
+    def __init__(self, cog):
+        super().__init__(timeout=None)
+        self.cog = cog
+
+    @discord.ui.button(
+        label="Join a Test Queue",
+        style=discord.ButtonStyle.success,
+        emoji="➕",
+        custom_id="inglotiers:test-queue:join",
+    )
+    async def join_queue(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await interaction.response.send_message(
+            "Choose the gamemode you want to join:",
+            view=TestQueueJoinView(self.cog),
+            ephemeral=True,
+        )
+
+    @discord.ui.button(
+        label="Leave Queue",
+        style=discord.ButtonStyle.secondary,
+        emoji="↩️",
+        custom_id="inglotiers:test-queue:leave",
+    )
+    async def leave_queue(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await self.cog.leave_test_queue(interaction)
+
+    @discord.ui.button(
+        label="Tester Controls",
+        style=discord.ButtonStyle.primary,
+        emoji="🛠️",
+        custom_id="inglotiers:test-queue:tester",
+    )
+    async def tester_controls(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await self.cog.show_tester_queue_controls(interaction)
+
+
 class TicketControlsView(discord.ui.View):
     def __init__(self, cog):
         super().__init__(timeout=None)
