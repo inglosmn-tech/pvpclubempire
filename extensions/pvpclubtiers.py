@@ -1867,10 +1867,14 @@ class PvPClubTiersCog(commands.Cog):
                 public_category=public_category,
             )
             request_channel = await self.ensure_test_request_panel(ctx.guild)
+            tier_info_channel = await self.ensure_tier_info_panel(ctx.guild)
+            leaderboard_channel = await self.ensure_leaderboard_panel(ctx.guild)
             await ctx.send(
                 "✅ **Test queues reset successfully.**\n"
                 f"• Queue panel: {queue_channel.mention}\n"
                 f"• Request panel: {request_channel.mention if request_channel else 'not created'}\n"
+                f"• Tier info: {tier_info_channel.mention if tier_info_channel else 'not created'}\n"
+                f"• Leaderboard: {leaderboard_channel.mention if leaderboard_channel else 'not created'}\n"
                 f"• Private sessions: **{session_category.name}**\n"
                 f"• Gamemode tester roles checked: **{len(roles)}**\n"
                 f"• Old test channels deleted: **{deleted}**\n"
