@@ -88,6 +88,12 @@ TRIVIA_QUESTIONS = [
 def mode_key(value: str) -> str:
     return re.sub(r"[^a-z0-9]+", "_", value.casefold()).strip("_")
 
+def plain_discord_name(value: str) -> str:
+    value = re.sub(r"^『[^』]+』\\s*", "", value.strip())
+    value = re.sub(r"^[^│|]+[│|]\\s*", "", value)
+    value = re.sub(r"^[^a-zA-Z0-9]+", "", value)
+    return value.strip().casefold()
+
 
 def clean_username(value: str) -> str:
     value = value.strip()
@@ -931,19 +937,30 @@ class PvPClubTiersCog(commands.Cog):
         return any(role.name.casefold() == expected_name for role in member.roles)
 
     async def find_category(self, guild: discord.Guild, name: str):
-        category = discord.utils.get(guild.categories, name=name)
+        wanted = plain_discord_name(name)
+        category = next(
+            (item for item in guild.categories if plain_discord_name(item.name) == wanted),
+            None,
+        )
         if category:
             return category
         # Rename the old category in place instead of creating a duplicate.
         legacy_name = name.replace("PVPCLUBTIERS", "INGLOTIERS")
-        legacy = discord.utils.get(guild.categories, name=legacy_name)
+        legacy = next(
+            (item for item in guild.categories if plain_discord_name(item.name) == plain_discord_name(legacy_name)),
+            None,
+        )
         if legacy:
             await legacy.edit(name=name, reason="PvPClubTiers rebrand")
             return legacy
         return await guild.create_category(name, reason="PvPClubTiers setup")
 
     async def find_channel(self, guild, name, category, send_disabled=False):
-        channel = discord.utils.get(guild.text_channels, name=name)
+        wanted = plain_discord_name(name)
+        channel = next(
+            (item for item in guild.text_channels if plain_discord_name(item.name) == wanted),
+            None,
+        )
         if channel:
             if channel.category_id != category.id:
                 await channel.edit(category=category, reason="PvPClubTiers setup")
@@ -952,8 +969,13 @@ class PvPClubTiersCog(commands.Cog):
         if send_disabled:
             overwrite[guild.default_role].send_messages = False
         if guild.me:
-            overwrite[guild.me] = discord.PermissionOverwrite(view_channel=True, send_messages=True, read_message_history=True)
-        return await guild.create_text_channel(name, category=category, overwrites=overwrite, reason="PvPClubTiers setup")
+            overwrite[guild.me] = discord.PermissionOverwrite(
+                view_channel=True, send_messages=True, read_message_history=True,
+                embed_links=True,
+            )
+        return await guild.create_text_channel(
+            name, category=category, overwrites=overwrite, reason="PvPClubTiers setup"
+        )
 
     async def build_test_queue_embed(self, guild: discord.Guild, gamemode: str) -> discord.Embed:
         config = await self.setting(guild.id)
