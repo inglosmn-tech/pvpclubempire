@@ -129,7 +129,7 @@ class LevelResetView(discord.ui.View):
             channel = self.guild.get_channel(int(channel_id)) if channel_id else None
             if isinstance(channel, discord.TextChannel):
                 try:
-                    await channel.delete(reason="PVPClub Empire meow level reset")
+                    await channel.delete(reason="PVPClub Empire level reset")
                     deleted_channel = True
                 except discord.HTTPException:
                     pass
@@ -137,7 +137,7 @@ class LevelResetView(discord.ui.View):
                 role = self.guild.get_role(int(role_id)) if str(role_id).isdigit() else None
                 if role and bot_member and role < bot_member.top_role:
                     try:
-                        await role.delete(reason="PVPClub Empire meow level reset")
+                        await role.delete(reason="PVPClub Empire level reset")
                         deleted_roles += 1
                     except discord.HTTPException:
                         pass
@@ -266,7 +266,7 @@ class LevelingCog(commands.Cog):
             channel_id = config.get("channel_id")
             channel = member.guild.get_channel(int(channel_id)) if channel_id else None
             if isinstance(channel, discord.TextChannel):
-                e = level_embed("🎉 Level Up!", f"{member.mention} reached **Level {after['level']}**!\nYou have earned **{after['total_xp'] - before['total_xp']} XP**. Keep collecting catnip! 🐾", 0x57D69A)
+                e = level_embed("🎉 Level Up!", f"{member.mention} reached **Level {after['level']}**!\nYou earned **{after['total_xp'] - before['total_xp']} XP**. ", 0x57D69A)
                 e.set_thumbnail(url=member.display_avatar.url)
                 try:
                     await channel.send(embed=e, allowed_mentions=discord.AllowedMentions(users=[member]))
