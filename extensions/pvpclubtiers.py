@@ -346,6 +346,8 @@ class TierInfoPanelView(discord.ui.View):
                 style=discord.ButtonStyle.link,
                 emoji="🌐",
                 url=website_url,
+                row=1,
+                row=1,
             ))
 
     @discord.ui.button(
@@ -544,6 +546,7 @@ class TestQueuePanelView(discord.ui.View):
         style=discord.ButtonStyle.success,
         emoji="✅",
         custom_id="inglotiers:test-queue:join",
+        row=0,
     )
     async def join_queue(self, interaction: discord.Interaction, button: discord.ui.Button):
         if not await self.cog.require_db(interaction):
@@ -580,6 +583,7 @@ class TestQueuePanelView(discord.ui.View):
         style=discord.ButtonStyle.secondary,
         emoji="📋",
         custom_id="inglotiers:test-queue:my-waitlists",
+        row=1,
     )
     async def my_waitlists(self, interaction: discord.Interaction, button: discord.ui.Button):
         await self.cog.show_my_test_waitlists(interaction)
@@ -589,6 +593,7 @@ class TestQueuePanelView(discord.ui.View):
         style=discord.ButtonStyle.danger,
         emoji="🚪",
         custom_id="inglotiers:test-queue:leave-all",
+        row=1,
     )
     async def leave_all(self, interaction: discord.Interaction, button: discord.ui.Button):
         await self.cog.leave_all_test_waitlists(interaction)
@@ -598,6 +603,7 @@ class TestQueuePanelView(discord.ui.View):
         style=discord.ButtonStyle.primary,
         emoji="🛠️",
         custom_id="inglotiers:test-queue:tester",
+        row=2,
     )
     async def tester_controls(self, interaction: discord.Interaction, button: discord.ui.Button):
         await self.cog.show_tester_queue_controls(interaction)
