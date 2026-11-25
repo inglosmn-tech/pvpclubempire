@@ -367,7 +367,7 @@ class LevelingCog(commands.Cog):
                         )
                     except discord.HTTPException:
                         log.warning("Could not rename legacy level role %s in guild %s", role.id, guild.id)
-                roles_existing.append(role.name)
+                roles_existing.append(name)
             role_map[str(milestone)] = role.id
 
         config.setdefault("role_mode", "replace")
