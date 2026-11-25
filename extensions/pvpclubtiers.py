@@ -2362,16 +2362,17 @@ class PvPClubTiersCog(commands.Cog):
                 ephemeral=True,
             )
 
-    @app_commands.command(name="set-tier", description="Submit a player's tier-test result from their claimed ticket.")
+    @app_commands.command(name="set-tier", description="Record the result for the private test session you are assigned.")
     @app_commands.guild_only()
     @app_commands.choices(gamemode=MODE_OPTIONS, tier=TIER_OPTIONS)
     async def set_tier(self, interaction, member: discord.Member, gamemode: app_commands.Choice[str],
                        tier: app_commands.Choice[str]):
         if not await self.require_db(interaction):
             return
+        await interaction.response.defer(thinking=True)
         actor = interaction.user
         if not isinstance(actor, discord.Member) or not await self.staff_or_tester(actor, gamemode.value):
-            await interaction.response.send_message(
+            await interaction.followup.send(
                 f"You need the {gamemode.value} Tester role or server management permissions.",
                 ephemeral=True,
             )
@@ -2380,17 +2381,19 @@ class PvPClubTiersCog(commands.Cog):
             "guild_id": interaction.guild.id,
             "channel_id": interaction.channel_id,
             "status": "claimed",
+            "session_type": "queue",
             "claimed_by": actor.id,
         })
         if not ticket:
-            await interaction.response.send_message(
-                "Open the player's test ticket, claim it with the button, then submit the result here.",
+            await interaction.followup.send(
+                "Run this command inside the private test session assigned to you. "
+                "Only the tester who started that session can submit its result.",
                 ephemeral=True,
             )
             return
         if ticket["gamemode"] != gamemode.value or ticket["discord_id"] != member.id:
-            await interaction.response.send_message(
-                "The selected player and gamemode must match this claimed ticket.",
+            await interaction.followup.send(
+                "The selected player and gamemode must match this private test session.",
                 ephemeral=True,
             )
             return
@@ -2401,7 +2404,7 @@ class PvPClubTiersCog(commands.Cog):
             )
         except (ValueError, PyMongoError, discord.HTTPException):
             log.exception("Could not save PvPClubTiers result")
-            await interaction.response.send_message(
+            await interaction.followup.send(
                 "Could not save this tier result. Check the Render logs and try again.",
                 ephemeral=True,
             )
@@ -2409,18 +2412,16 @@ class PvPClubTiersCog(commands.Cog):
         await self.db_call(self.tickets.update_one, {"ticket_id": ticket["ticket_id"]}, {
             "$set": {"status": "completed", "completed_at": datetime.now(timezone.utc)}
         })
-        if ticket.get("session_type") == "queue":
-            await self.db_call(
-                self.test_queue_entries.update_one,
-                {"queue_id": ticket.get("queue_id"), "status": "testing"},
-                {"$set": {"status": "completed", "completed_at": datetime.now(timezone.utc)}},
-            )
-            await self.refresh_test_queue_panel(interaction.guild)
-        await interaction.response.send_message(
-            f"✅ Saved **{tier.value}** for {member.mention} in **{gamemode.value}**. "
-            "The ticket is marked complete.",
+        await self.db_call(
+            self.test_queue_entries.update_one,
+            {"queue_id": ticket.get("queue_id"), "status": "testing"},
+            {"$set": {"status": "completed", "completed_at": datetime.now(timezone.utc)}},
         )
-
+        await interaction.followup.send(
+            f"✅ Saved **{tier.value}** for {member.mention} in **{gamemode.value}**. "
+            "The test is complete. Close the session when you are finished.",
+        )
+        await self.refresh_test_queue_panel(interaction.guild)
 
     @app_commands.command(name="ign", description="Link or update your Minecraft username.")
     @app_commands.guild_only()
@@ -3594,7 +3595,7 @@ class PvPClubTiersCog(commands.Cog):
         await self.db_call(self.duels.update_one, {"duel_id": duel_id}, {"$set": {"status": "cancelled"}})
         await interaction.response.send_message(f"Duel {duel_id} cancelled.")
 
-    @app_commands.command(name="close", description="Close the tier test ticket you're currently in.")
+    @app_commands.command(name="close", description="Close the private test session you are currently in.")
     @app_commands.guild_only()
     async def close_command(self, interaction):
         await self.ticket_action(interaction, "close")
