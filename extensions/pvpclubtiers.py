@@ -1014,13 +1014,24 @@ class PvPClubTiersCog(commands.Cog):
                 old_channel_ids.add(request_channel.id)
 
         deleted_old_channels = 0
+        failed_old_channels = 0
         for old_channel_id in old_channel_ids:
             old_channel = guild.get_channel(old_channel_id)
+            if old_channel is None:
+                try:
+                    old_channel = await guild.fetch_channel(old_channel_id)
+                except discord.NotFound:
+                    continue
+                except (discord.Forbidden, discord.HTTPException):
+                    failed_old_channels += 1
+                    log.exception("Could not fetch legacy PvPClubTiers test channel %s", old_channel_id)
+                    continue
             if isinstance(old_channel, discord.TextChannel) and old_channel.id != queue_channel.id:
                 try:
                     await old_channel.delete(reason="Replacing legacy PvPClubTiers test tickets with queues")
                     deleted_old_channels += 1
                 except (discord.Forbidden, discord.HTTPException):
+                    failed_old_channels += 1
                     log.exception("Could not delete legacy PvPClubTiers test channel %s", old_channel_id)
 
         if legacy_ticket_docs:
@@ -1038,6 +1049,7 @@ class PvPClubTiersCog(commands.Cog):
             try:
                 await legacy_category.delete(reason="Retired legacy PvPClubTiers ticket category")
             except (discord.Forbidden, discord.HTTPException):
+                failed_old_channels += 1
                 log.exception("Could not delete legacy tier ticket category in guild %s", guild.id)
 
         # ?resetuptest clears waiting entries and closes every queue. A normal
@@ -1079,7 +1091,7 @@ class PvPClubTiersCog(commands.Cog):
             upsert=True,
         )
         await self.ensure_test_queue_panel(guild)
-        return queue_channel, session_category, resolved_roles, deleted_old_channels
+        return queue_channel, session_category, resolved_roles, deleted_old_channels, failed_old_channels
 
     @commands.command(name="tiersetup")
     @commands.guild_only()
@@ -1103,7 +1115,7 @@ class PvPClubTiersCog(commands.Cog):
                 tier_roles[tier] = role.id
 
             public_category = await self.find_category(guild, "PVPCLUBTIERS")
-            queue_channel, session_category, tester_roles, deleted = await self.reset_test_queue_setup(
+            queue_channel, session_category, tester_roles, deleted, failed = await self.reset_test_queue_setup(
                 guild, public_category=public_category, reset_queue_state=False,
             )
             results = await self.find_channel(guild, "results", public_category)
@@ -1170,7 +1182,8 @@ class PvPClubTiersCog(commands.Cog):
                 f"• Activity: {activity.mention}\n"
                 f"• Logs: {logs.mention}\n"
                 f"• Matchmaking: {matchmaking.mention}\n"
-                f"• Retired old test channels: **{deleted}**\n\n"
+                f"• Retired old test channels: **{deleted}**\n"
+                f"• Old channels not deleted: **{failed}**\n\n"
                 "Testers open their own gamemode queue from the queue panel. "
                 "When a tester starts the next player, the bot creates a private session "
                 "visible only to that player, the assigned tester and the bot."
@@ -1195,7 +1208,7 @@ class PvPClubTiersCog(commands.Cog):
             public_category = ctx.guild.get_channel(int(public_category_id)) if public_category_id else None
             if not isinstance(public_category, discord.CategoryChannel):
                 public_category = await self.find_category(ctx.guild, "PVPCLUBTIERS")
-            queue_channel, session_category, roles, deleted = await self.reset_test_queue_setup(
+            queue_channel, session_category, roles, deleted, failed = await self.reset_test_queue_setup(
                 ctx.guild,
                 public_category=public_category,
             )
@@ -1205,9 +1218,11 @@ class PvPClubTiersCog(commands.Cog):
                 f"• Private sessions: **{session_category.name}**\n"
                 f"• Gamemode tester roles checked: **{len(roles)}**\n"
                 f"• Old test channels deleted: **{deleted}**\n"
+                f"• Old channels not deleted: **{failed}**\n"
                 "• All queues start closed. Testers can open only the gamemodes they test.\n"
                 "• New sessions are visible only to the queued player, their assigned tester and the bot.\n"
                 "• General support tickets, results, activity and server channels were not removed."
+                + ("\n⚠️ Give the bot Manage Channels to remove the remaining legacy test channels." if failed else "")
             )
         except discord.Forbidden:
             await ctx.send("Discord denied a channel or role change. Check Manage Channels, Manage Roles and the bot role position.")
