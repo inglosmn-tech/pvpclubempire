@@ -2215,11 +2215,30 @@ class PvPClubTiersCog(commands.Cog):
         actor = interaction.user
         allowed = isinstance(actor, discord.Member) and await self.staff_or_tester(actor, ticket["gamemode"])
         if action == "close":
-            if actor.id != ticket["discord_id"] and not allowed:
-                await interaction.response.send_message("Only the ticket owner, matching tester or staff can close it.", ephemeral=True)
+            if ticket.get("session_type") == "queue":
+                can_close = (
+                    actor.id == ticket["discord_id"]
+                    or actor.id == ticket.get("claimed_by")
+                    or (isinstance(actor, discord.Member) and (
+                        actor.guild_permissions.manage_guild or actor.guild_permissions.administrator
+                    ))
+                )
+            else:
+                can_close = actor.id == ticket["discord_id"] or allowed
+            if not can_close:
+                await interaction.response.send_message(
+                    "Only the player, the tester assigned to this session, or an administrator can close it.",
+                    ephemeral=True,
+                )
                 return
             await self.db_call(self.tickets.update_one, {"ticket_id": ticket["ticket_id"]},
                                {"$set": {"status": "closed", "closed_at": datetime.now(timezone.utc), "closed_by": actor.id}})
+            if ticket.get("session_type") == "queue" and ticket.get("status") != "completed":
+                await self.db_call(
+                    self.test_queue_entries.update_one,
+                    {"queue_id": ticket.get("queue_id"), "status": "testing"},
+                    {"$set": {"status": "closed", "closed_at": datetime.now(timezone.utc)}},
+                )
             await interaction.response.send_message("Ticket closed. This channel will be deleted in five seconds.")
             config = await self.setting(interaction.guild.id)
             log_channel = interaction.guild.get_channel(config.get("logs_channel_id", 0))
@@ -2521,6 +2540,13 @@ class PvPClubTiersCog(commands.Cog):
         await self.db_call(self.tickets.update_one, {"ticket_id": ticket["ticket_id"]}, {
             "$set": {"status": "completed", "completed_at": datetime.now(timezone.utc)}
         })
+        if ticket.get("session_type") == "queue":
+            await self.db_call(
+                self.test_queue_entries.update_one,
+                {"queue_id": ticket.get("queue_id"), "status": "testing"},
+                {"$set": {"status": "completed", "completed_at": datetime.now(timezone.utc)}},
+            )
+            await self.refresh_test_queue_panel(interaction.guild)
         await interaction.response.send_message(
             f"✅ Saved **{tier.value}** for {member.mention} in **{gamemode.value}**. "
             "The ticket is marked complete.",
@@ -2974,6 +3000,8 @@ class PvPClubTiersCog(commands.Cog):
                 config = await self.setting(guild.id)
                 if config.get("matchmaking_channel_id"):
                     await self.ensure_matchmaking_panel(guild)
+                if config.get("test_queue_channel_id"):
+                    await self.ensure_test_queue_panel(guild)
                 # A Mongo transaction is all-or-nothing, so stale resolving states
                 # can safely be sent to staff review after a restart.
                 cutoff = datetime.now(timezone.utc).timestamp() - 15 * 60
