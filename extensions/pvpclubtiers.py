@@ -879,31 +879,39 @@ class PvPClubTiersCog(commands.Cog):
             overwrite[guild.me] = discord.PermissionOverwrite(view_channel=True, send_messages=True, read_message_history=True)
         return await guild.create_text_channel(name, category=category, overwrites=overwrite, reason="PvPClubTiers setup")
 
-    async def build_test_queue_embed(self, guild: discord.Guild) -> discord.Embed:
+    async def build_test_queue_embed(self, guild: discord.Guild, gamemode: str) -> discord.Embed:
         config = await self.setting(guild.id)
-        modes = config.get("test_queue_modes") or {}
-        embed = discord.Embed(
-            title="PvPClubTiers • Test Queues",
-            description=(
-                "Join the queue for the gamemode you want tested. A tester for that gamemode "
-                "will open a private test session when they are ready. Only you, that assigned "
-                "tester, and the bot can view the session channel."
-            ),
-            colour=0x55DDEB,
+        mode_config = (config.get("test_queue_modes") or {}).get(mode_key(gamemode), {})
+        is_open = bool(mode_config.get("open", False))
+        count = await self.db_call(
+            self.test_queue_entries.count_documents,
+            {"guild_id": guild.id, "gamemode": gamemode, "status": "waiting"},
         )
-        for mode in GAMEMODES:
-            mode_config = modes.get(mode_key(mode), {})
-            is_open = bool(mode_config.get("open", False))
-            count = await self.db_call(
-                self.test_queue_entries.count_documents,
-                {"guild_id": guild.id, "gamemode": mode, "status": "waiting"},
+        role_id = (config.get("tester_roles") or {}).get(gamemode)
+        role = guild.get_role(int(role_id)) if role_id else None
+        online_testers = [
+            member for member in (role.members if role else [])
+            if not member.bot and member.status != discord.Status.offline
+        ]
+        if is_open:
+            status_line = f"🟢 **Open.** {len(online_testers) or 'A'} {gamemode} tester(s) accepting players."
+            colour = 0x57D69A
+        else:
+            status_line = (
+                f"🔴 **Closed.** No {gamemode} tester online right now. "
+                f"{count} on the waitlist · you'll be pinged when it opens."
             )
-            embed.add_field(
-                name=mode,
-                value=f"{'🟢 OPEN' if is_open else '🔴 CLOSED'} · **{count}** waiting",
-                inline=True,
-            )
-        embed.set_footer(text="Join a queue • Leave whenever you are waiting • Testers manage their own modes")
+            colour = 0x747B8C
+
+        embed = discord.Embed(
+            title=f"{MODE_EMOJIS.get(gamemode, '🎮')} {gamemode} Queue",
+            description=(
+                f"{status_line}\n\n"
+                f"**{count}/{QUEUE_CAPACITY} in queue · first to {MODE_BEST_OF.get(gamemode, 4)}**"
+            ),
+            colour=colour,
+        )
+        embed.set_footer(text="Join while closed to reserve your place • Leave any time before your test starts")
         return embed
 
     async def ensure_test_queue_panel(self, guild: discord.Guild):
@@ -912,14 +920,102 @@ class PvPClubTiersCog(commands.Cog):
         channel = guild.get_channel(int(channel_id)) if channel_id else None
         public_category = guild.get_channel(int(config.get("public_category_id", 0) or 0))
         if not isinstance(public_category, discord.CategoryChannel):
+            public_category = discord.utils.get(guild.categories, name="⚔️│PVPCLUBTIERS")
+        if not isinstance(public_category, discord.CategoryChannel):
             public_category = discord.utils.get(guild.categories, name="PVPCLUBTIERS")
-        if not isinstance(channel, discord.TextChannel) and isinstance(public_category, discord.CategoryChannel):
-            channel = discord.utils.get(public_category.text_channels, name="test-queues")
+        if not isinstance(channel, discord.TextChannel):
+            channel = discord.utils.get(
+                guild.text_channels,
+                name="『🎮』 queues",
+            ) or discord.utils.get(guild.text_channels, name="queues") or discord.utils.get(
+                guild.text_channels, name="test-queues"
+            )
+        queue_overwrites = {
+            guild.default_role: discord.PermissionOverwrite(
+                view_channel=True, send_messages=False, read_message_history=True,
+            ),
+        }
+        if guild.me:
+            queue_overwrites[guild.me] = discord.PermissionOverwrite(
+                view_channel=True, send_messages=True, embed_links=True,
+                read_message_history=True, manage_messages=True,
+            )
         if channel is None:
             if not isinstance(public_category, discord.CategoryChannel):
                 return None
             channel = await guild.create_text_channel(
-                "test-queues",
+                "『🎮』 queues",
+                category=public_category,
+                overwrites=queue_overwrites,
+                reason="PvPClubTiers per-gamemode test queues",
+            )
+        else:
+            await channel.edit(
+                category=public_category if isinstance(public_category, discord.CategoryChannel) else channel.category,
+                overwrites=queue_overwrites,
+                reason="PvPClubTiers public queue card permissions",
+            )
+
+        # Retire the old single-panel post; every mode now has its own clean card.
+        old_panel_id = config.get("test_queue_panel_message_id")
+        if old_panel_id:
+            try:
+                old_panel = await channel.fetch_message(int(old_panel_id))
+                await old_panel.delete()
+            except (discord.NotFound, discord.Forbidden, discord.HTTPException, ValueError):
+                pass
+
+        message_ids = dict(config.get("test_queue_panel_message_ids") or {})
+        for mode in GAMEMODES:
+            message = None
+            message_id = message_ids.get(mode_key(mode))
+            if message_id:
+                try:
+                    message = await channel.fetch_message(int(message_id))
+                except (discord.NotFound, discord.Forbidden, discord.HTTPException, ValueError):
+                    message = None
+            embed = await self.build_test_queue_embed(guild, mode)
+            view = GamemodeTestQueueView(self, mode)
+            if message:
+                await message.edit(embed=embed, view=view, allowed_mentions=discord.AllowedMentions.none())
+            else:
+                message = await channel.send(
+                    embed=embed,
+                    view=view,
+                    allowed_mentions=discord.AllowedMentions.none(),
+                )
+                message_ids[mode_key(mode)] = message.id
+
+        await self.db_call(
+            self.settings.update_one,
+            {"guild_id": guild.id},
+            {"$set": {
+                "test_queue_channel_id": channel.id,
+                "test_queue_panel_message_ids": message_ids,
+            }, "$unset": {"test_queue_panel_message_id": ""}},
+            upsert=True,
+        )
+        return channel
+
+    async def ensure_test_request_panel(self, guild: discord.Guild):
+        config = await self.setting(guild.id)
+        channel_id = config.get("test_request_channel_id")
+        channel = guild.get_channel(int(channel_id)) if channel_id else None
+        if not isinstance(channel, discord.TextChannel):
+            public_category = guild.get_channel(int(config.get("public_category_id", 0) or 0))
+            if not isinstance(public_category, discord.CategoryChannel):
+                public_category = discord.utils.get(guild.categories, name="PVPCLUBTIERS")
+            if isinstance(public_category, discord.CategoryChannel):
+                channel = discord.utils.get(public_category.text_channels, name="『📥』 request-test")
+                channel = channel or discord.utils.get(public_category.text_channels, name="request-test")
+        if channel is None:
+            public_category = guild.get_channel(int(config.get("public_category_id", 0) or 0))
+            if not isinstance(public_category, discord.CategoryChannel):
+                public_category = discord.utils.get(guild.categories, name="PVPCLUBTIERS")
+            if not isinstance(public_category, discord.CategoryChannel):
+                return None
+            channel = await guild.create_text_channel(
+                "『📥』 request-test",
                 category=public_category,
                 overwrites={
                     guild.default_role: discord.PermissionOverwrite(
@@ -930,34 +1026,48 @@ class PvPClubTiersCog(commands.Cog):
                         read_message_history=True, manage_messages=True,
                     ),
                 },
-                reason="PvPClubTiers test queue panel",
+                reason="PvPClubTiers single-IGN test request panel",
             )
         else:
-            queue_overwrites = {
+            overwrites = {
                 guild.default_role: discord.PermissionOverwrite(
                     view_channel=True, send_messages=False, read_message_history=True,
                 ),
             }
             if guild.me:
-                queue_overwrites[guild.me] = discord.PermissionOverwrite(
+                overwrites[guild.me] = discord.PermissionOverwrite(
                     view_channel=True, send_messages=True, embed_links=True,
                     read_message_history=True, manage_messages=True,
                 )
             await channel.edit(
-                name="test-queues",
-                category=public_category if isinstance(public_category, discord.CategoryChannel) else channel.category,
-                overwrites=queue_overwrites,
-                reason="PvPClubTiers test queue panel permissions",
+                overwrites=overwrites,
+                reason="PvPClubTiers test request panel permissions",
             )
 
+        config = await self.setting(guild.id)
         panel = None
-        message_id = config.get("test_queue_panel_message_id")
+        message_id = config.get("test_request_panel_message_id")
         if message_id:
             try:
                 panel = await channel.fetch_message(int(message_id))
             except (discord.NotFound, discord.Forbidden, discord.HTTPException, ValueError):
                 panel = None
-        embed = await self.build_test_queue_embed(guild)
+        embed = discord.Embed(
+            title="📥 Request a tier test",
+            description=(
+                "Enter your Minecraft IGN once, then choose any gamemodes you want to join. "
+                "You can be on multiple waitlists at the same time.\n\n"
+                "When a tester opens a gamemode queue, the players waiting for that mode are pinged. "
+                "When your turn arrives, the bot opens a private session for you and the assigned tester."
+            ),
+            colour=0x55DDEB,
+        )
+        embed.add_field(
+            name="How it works",
+            value="1. Set your IGN.\n2. Select one or more gamemodes.\n3. Check **My waitlists** or leave all queues whenever you need.",
+            inline=False,
+        )
+        embed.set_footer(text="One Minecraft IGN • Multiple gamemode waitlists")
         if panel:
             await panel.edit(embed=embed, view=TestQueuePanelView(self))
         else:
@@ -966,9 +1076,15 @@ class PvPClubTiersCog(commands.Cog):
                 view=TestQueuePanelView(self),
                 allowed_mentions=discord.AllowedMentions.none(),
             )
-            await self.db_call(self.settings.update_one, {"guild_id": guild.id}, {
-                "$set": {"test_queue_panel_message_id": panel.id, "test_queue_channel_id": channel.id}
-            }, upsert=True)
+        await self.db_call(
+            self.settings.update_one,
+            {"guild_id": guild.id},
+            {"$set": {
+                "test_request_channel_id": channel.id,
+                "test_request_panel_message_id": panel.id,
+            }},
+            upsert=True,
+        )
         return channel
 
     async def refresh_test_queue_panel(self, guild: discord.Guild):
