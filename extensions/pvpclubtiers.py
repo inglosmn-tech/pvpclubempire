@@ -1265,7 +1265,6 @@ class PvPClubTiersCog(commands.Cog):
             ),
             colour=colour,
         )
-        embed.set_footer(text="Join when open • Leave before testing")
         return embed
 
     async def ensure_test_queue_panel(self, guild: discord.Guild):
