@@ -86,7 +86,7 @@ Give the bot the permissions needed for the features you enable: Manage Roles, M
 - `?spamchannel` — mark the current channel as a spam zone where normal bot AutoMod is bypassed but the anti-macro human check stays active. Use `?spamchannel off` to disable it or `?spamchannel status` to check.
 - `?storage` — inspect database storage usage.
 - `?levelsetup` or `/level-setup` — set up XP/voice leveling, a `#level-ups` channel and neutral milestone roles. Existing bot-created cat-themed level roles and channels are renamed when possible.
-- `?v1` — rename categories and channels into the decorative `emoji│CATEGORY` and `『emoji』 channel-name` styles.
+- `?v1` — rename categories and channels into the decorative `emoji | CATEGORY` and `『emoji』 channel-name` styles.
 - `?catinvasion` — enable random cat events in the current channel; first exact `MEOW` within 60 seconds wins 25 XP. Events run every 3–6 hours between 10:00 and 22:00 (Amsterdam time).
 - `?catinvasionstop` — disable Cat Invasion.
 
