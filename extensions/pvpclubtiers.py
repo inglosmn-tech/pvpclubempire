@@ -90,7 +90,7 @@ def mode_key(value: str) -> str:
 
 def plain_discord_name(value: str) -> str:
     value = re.sub(r"^『[^』]+』\s*", "", value.strip())
-    value = re.sub(r"^[^│|]+[│|]\\s*", "", value)
+    value = re.sub(r"^[^│|]+[│|]\s*", "", value)
     value = re.sub(r"^[^a-zA-Z0-9]+", "", value)
     return value.strip().casefold()
 
@@ -1632,7 +1632,10 @@ class PvPClubTiersCog(commands.Cog):
         legacy_category_id = config.get("ticket_category_id")
         legacy_category = guild.get_channel(int(legacy_category_id)) if legacy_category_id else None
         if not isinstance(legacy_category, discord.CategoryChannel):
-            legacy_category = discord.utils.get(guild.categories, name="TIER TEST TICKETS")
+            legacy_category = next(
+                (item for item in guild.categories if plain_discord_name(item.name) == "tier test tickets"),
+                None,
+            )
         legacy_ticket_docs = await self.db_call(
             lambda: list(self.tickets.find({
                 "guild_id": guild.id,
