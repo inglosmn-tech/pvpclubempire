@@ -1983,7 +1983,7 @@ class PvPClubTiersCog(commands.Cog):
         )
         panel_embed.add_field(
             name="Before applying",
-            value="Use your real Minecraft username and explain why you would be a fair, reliable tester.",
+            value="Use your real Minecraft username, enter your current tier/rank, and explain why you would be a fair, reliable tester.",
             inline=False,
         )
         panel_embed.set_footer(text="PVPClub Empire • Tester Applications")
