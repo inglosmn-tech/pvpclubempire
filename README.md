@@ -2,14 +2,18 @@
 
 Existing `discord.py` bot updated with MCTiers lookups, persistent meow statistics, event and Tierwatch tools, community utilities, AutoMod, moderation and a XP and voice leveling system.
 
-## Render deployment
+## Render deployment and automatic GitHub deploys
 
 - **Build command:** `pip install -r requirements.txt`
 - **Start command:** `python main.py`
 - **Runtime:** Python 3.10 or newer
 - **Health check:** `/health`
 
-The ZIP contains `main.py`, `requirements.txt`, `README.md`, `.env.example` and the modular `extensions/` package. Keep the `extensions/` folder when uploading to GitHub; `main.py` loads those cogs at startup.
+The bot starts its Discord connection, loads every cog in `extensions/`, and starts the PvPClubTiers website from `main.py`. The existing GitHub Actions workflow validates Python syntax and the embedded website JavaScript on pushes to `main`.
+
+To deploy every GitHub update automatically, connect the Render Web Service to this repository (`inglosmn-tech/pvpclubempire`) and the `main` branch, then set **Auto-Deploy** to **On Commit** in Render. This repository cannot link a Render account or enable that dashboard setting by itself; it is a one-time Render setup. Keep the service on an always-on plan suitable for a Discord Gateway bot, because a service that sleeps will disconnect the bot.
+
+Keep the `extensions/` folder alongside `main.py`; the bot loads those cogs at startup.
 
 ### Required environment variables
 
@@ -79,7 +83,7 @@ Give the bot the permissions needed for the features you enable: Manage Roles, M
 - `?tiersetup` — create/check the 10 shared LT5–HT1 tier roles and 11 gamemode tester roles, `#queues` cards, the one-IGN `#request-test` panel, private `TEST SESSIONS`, `#tier-info`, `#tier-leaderboard`, results/activity/log channels and matchmaking. Requires `MONGO_URI`.
 - `?settier <gamemode> <ign>` — server-owner-only manual tier assignment. Looks up an existing PvPClubTiers player by Minecraft username and opens a tier selector; records the change in history and updates their overall tier role.
 - `?resetuptest` — retire old public test tickets and thread-only queue/request forum channels, cancel waiting entries, close all gamemode queues and rebuild the text-channel panels. It preserves results, activity, logs, general support tickets and unrelated channels.
-- `#queues` has one status card per gamemode, with Join/Leave buttons, a 20-player waitlist and first-to format. Players can join while a queue is closed and are pinged when a tester opens it. The request panel saves an IGN once and lets players join multiple waitlists; **My waitlists** and **Leave all waitlists** manage their entries.
+- `#queues` has one status card per gamemode, with Join/Leave buttons, a 20-player waitlist and first-to format. Players can join only while the matching gamemode queue is open. Only members with that gamemode's Tester role can open or close it; administrators do not bypass this role check. Existing waitlist entries stay in place when a queue closes and are notified when it reopens. The request panel saves an IGN once and lets players join multiple open queues; **My waitlists** and **Leave all waitlists** manage their entries.
 - `?testerappsetup #review-channel` — configure the tester application review channel and refresh the Apply for Tier Tester panel in `#tier-info`. Applicants choose a gamemode and submit their Minecraft IGN, current tier/rank, testing experience and reason; the form is sent to the configured review channel. Only the server owner can accept or reject. Accepted applicants receive only that gamemode's Tester role. Run `?tiersetup` first. Requires `MONGO_URI`.
 - `?triviasetup` — create/configure `#trivia` and start a new question every 20 minutes. Correct answers earn one point.
 - `?triviastop` — pause scheduled trivia.
