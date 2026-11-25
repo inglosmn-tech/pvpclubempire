@@ -2917,6 +2917,8 @@ class PvPClubTiersCog(commands.Cog):
             channel = guild.get_channel(config.get(key, 0))
             if channel:
                 await channel.send(embed=embed)
+        if config.get("leaderboard_channel_id"):
+            await self.ensure_leaderboard_panel(guild)
         return old_tier, best, best_mode
 
     @commands.command(name="settier")
@@ -3229,15 +3231,24 @@ class PvPClubTiersCog(commands.Cog):
         if not await self.require_db(interaction):
             return
         mode = gamemode.value if gamemode else None
+        if mode is None:
+            embed = await self.build_leaderboard_embed(interaction.guild)
+            await interaction.response.send_message(embed=embed, view=LeaderboardPanelView(self))
+            return
         rows = await self.make_leaderboard(interaction.guild.id, mode, 15)
         if not rows:
-            await interaction.response.send_message("No players have been tiered yet.", ephemeral=True)
+            await interaction.response.send_message(f"No players have been tiered in {mode} yet.", ephemeral=True)
             return
-        e = discord.Embed(title=f"🏆 PvPClubTiers • {mode or 'Overall'} leaderboard",
-                          description="\n".join(f"**{i}.** {r['username']} — **{r['display_tier']}**" +
-                          (f" · {r['best_mode']}" if not mode and r.get("best_mode") else "")
-                          for i, r in enumerate(rows, 1)), colour=0x55DDEB)
-        await interaction.response.send_message(embed=e)
+        lines = [
+            f"**{i}.** {row['username']} — **{row['display_tier']}**"
+            for i, row in enumerate(rows, 1)
+        ]
+        embed = discord.Embed(
+            title=f"{MODE_EMOJIS.get(mode, '🎮')} {mode} leaderboard",
+            description="\n".join(lines),
+            colour=0x55DDEB,
+        )
+        await interaction.response.send_message(embed=embed)
 
     @app_commands.command(name="tier-rank", description="Show a player's overall PvPClubTiers position.")
     @app_commands.guild_only()
