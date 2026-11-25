@@ -1782,7 +1782,7 @@ class PvPClubTiersCog(commands.Cog):
             description=(
                 "Want to help test players in PvPClub? Click the button below, choose the gamemode "
                 "you want to test, and complete the short application.\n\n"
-                "Applications are sent to the review channel. **Only the server owner can accept "
+                "Your completed form is sent to the configured review channel. **Only the server owner can accept "
                 "or reject an application.** Accepted applicants receive the tester role for their "
                 "selected gamemode only."
             ),
@@ -1822,6 +1822,7 @@ class PvPClubTiersCog(commands.Cog):
                 }},
                 upsert=True,
             )
+            await self.ensure_tier_info_panel(guild)
         except discord.Forbidden:
             await ctx.reply("Discord denied access. Check my permissions in both channels and my role position.")
             return
@@ -1977,7 +1978,7 @@ class PvPClubTiersCog(commands.Cog):
                     raise
 
                 await interaction.followup.send(
-                    f"✅ Your **{gamemode}** tester application has been sent to the owner for review.",
+                    f"✅ Your **{gamemode}** tester application has been sent to the configured review channel.",
                     ephemeral=True,
                 )
             except Exception:
