@@ -2230,6 +2230,7 @@ def channel_style_emoji(name: str) -> str:
         (("rule",), "📝"),
         (("announcement", "news"), "🔔"),
         (("event",), "🪩"),
+        (("ticket-log", "mod-log", "server-log", "log"), "📁"),
         (("open-a-ticket", "ticket"), "🎫"),
         (("level-up", "level"), "⭐"),
         (("general", "chat"), "💬"),
@@ -2261,10 +2262,10 @@ def category_style_emoji(name: str) -> str:
     rules = [
         (("info", "help", "welcome"), "👾"),
         (("general", "community"), "💬"),
-        (("pvpclubtiers", "tier", "testing"), "⚔️"),
-        (("ticket", "support"), "🎫"),
         (("log", "staff", "moderation"), "🛡️"),
+        (("ticket", "support"), "🎫"),
         (("queue", "matchmaking"), "🎮"),
+        (("pvpclubtiers", "tier", "testing"), "⚔️"),
         (("voice", "lounge"), "🔊"),
     ]
     for keywords, emoji in rules:
