@@ -2290,18 +2290,18 @@ async def channel_style_v1(ctx: commands.Context):
     already_styled = 0
     failed = 0
 
-    # Categories use: emoji | CATEGORY NAME
+    # Categories use: emoji│CATEGORY NAME
     # Channels use: 『emoji』 channel-name
     for item in list(guild.channels):
         try:
             if isinstance(item, discord.CategoryChannel):
-                if re.match(r"^.{1,8}\s+\|\s+", item.name):
+                if re.match(r"^.{1,8}│", item.name):
                     already_styled += 1
                     continue
                 base = strip_channel_style(item.name)
                 if not base:
                     continue
-                new_name = f"{category_style_emoji(base)} | {base.upper()}"[:100]
+                new_name = f"{category_style_emoji(base)}│{base.upper()}"[:100]
             else:
                 if re.match(r"^『[^』]+』\s+", item.name):
                     already_styled += 1
