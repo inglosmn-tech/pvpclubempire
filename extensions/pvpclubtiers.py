@@ -1532,10 +1532,9 @@ class PvPClubTiersCog(commands.Cog):
         embed = discord.Embed(
             title="📥 Sign Up for a Tier Test",
             description=(
-                "Click **Sign Up** to save your Minecraft IGN, then choose the gamemode queues that are currently open. "
-                "You can join multiple open queues at the same time.\n\n"
-                "You cannot join a closed queue. When a tester opens a gamemode queue, its waiting players "
-                "are notified. When your turn arrives, the bot opens a private session for you and the assigned tester."
+                "Click **Sign Up** and enter your Minecraft IGN once. You're automatically registered for every gamemode "
+                "and added to all open queues. When another tester opens a queue, you'll be added there too.\n\n"
+                "When your turn arrives, the bot opens a private session for you and the assigned tester."
             ),
             colour=0x55DDEB,
         )
@@ -1543,12 +1542,12 @@ class PvPClubTiersCog(commands.Cog):
             name="How it works",
             value=(
                 "1. Press **Sign Up** and enter your Minecraft IGN.\n"
-                "2. Select one or more **open** gamemodes.\n"
-                "3. Use **Leave all waitlists** to cancel your waiting entries."
+                "2. You're automatically added to every open gamemode queue.\n"
+                "3. Use **Leave all waitlists** to cancel your signup."
             ),
             inline=False,
         )
-        embed.set_footer(text="One Minecraft IGN • Multiple gamemode waitlists")
+        embed.set_footer(text="One signup • All gamemodes")
         if panel:
             await panel.edit(
                 content=None,
@@ -2722,6 +2721,18 @@ class PvPClubTiersCog(commands.Cog):
                     break
         return added_ids
 
+    async def refill_open_queues_from_signups(
+        self,
+        guild: discord.Guild,
+        *,
+        exclude_modes: set[str] | None = None,
+    ):
+        """Re-add active global signups to open queues after a test frees the player."""
+        excluded = exclude_modes or set()
+        for mode in await self.open_test_queue_modes(guild):
+            if mode not in excluded:
+                await self.add_global_signups_to_queue(guild, mode)
+
     async def join_selected_test_queues(
         self,
         interaction: discord.Interaction,
@@ -3289,6 +3300,13 @@ class PvPClubTiersCog(commands.Cog):
                 {"$set": {"status": "closed", "closed_at": datetime.now(timezone.utc)}},
             )
 
+        if ticket.get("session_type") == "queue":
+            await self.refill_open_queues_from_signups(
+                interaction.guild,
+                exclude_modes={ticket.get("gamemode")},
+            )
+            await self.refresh_test_queue_panel(interaction.guild)
+
         await interaction.followup.send(
             "Test session closed. This private channel will be deleted in five seconds.",
             ephemeral=True,
@@ -3588,6 +3606,10 @@ class PvPClubTiersCog(commands.Cog):
             self.test_queue_entries.update_one,
             {"queue_id": ticket.get("queue_id"), "status": "testing"},
             {"$set": {"status": "completed", "completed_at": datetime.now(timezone.utc)}},
+        )
+        await self.refill_open_queues_from_signups(
+            interaction.guild,
+            exclude_modes={gamemode.value},
         )
         await interaction.followup.send(
             f"✅ Saved **{tier.value}** for {member.mention} in **{gamemode.value}**. "
