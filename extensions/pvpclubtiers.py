@@ -601,37 +601,131 @@ class TestQueuePanelView(discord.ui.View):
 class TesterQueueModeSelect(discord.ui.Select):
     def __init__(self, parent):
         self.parent_view = parent
+        options = []
+        for mode in parent.allowed_modes:
+            is_open = bool(parent.queue_states.get(mode, False))
+            options.append(discord.SelectOption(
+                label=mode,
+                value=mode,
+                description=f"Queue is {'OPEN' if is_open else 'CLOSED'}",
+                emoji=MODE_EMOJIS.get(mode),
+            ))
         super().__init__(
-            placeholder="Choose a gamemode you test…",
+            placeholder="Select the exact gamemode you are managing…",
             min_values=1,
             max_values=1,
-            options=[discord.SelectOption(label=mode, value=mode) for mode in parent.allowed_modes],
+            options=options,
             custom_id="inglotiers:test-queue:tester-mode",
         )
 
     async def callback(self, interaction: discord.Interaction):
         self.parent_view.selected_gamemode = self.values[0]
+        await self.parent_view.refresh_selected_mode(interaction.guild)
         await interaction.response.edit_message(
-            content=f"Selected **{self.values[0]}**. Open or close its queue, or start the next player.",
+            content=self.parent_view.status_message(),
             view=self.parent_view,
         )
 
 
 class TesterQueueControlsView(discord.ui.View):
-    def __init__(self, cog, allowed_modes: list[str]):
-        super().__init__(timeout=180)
+    def __init__(self, cog, allowed_modes: list[str], queue_states: dict[str, bool] | None = None):
         self.cog = cog
         self.allowed_modes = allowed_modes
-        self.selected_gamemode = allowed_modes[0]
+        self.queue_states = dict(queue_states or {})
+        self.selected_gamemode = None
+        super().__init__(timeout=180)
         self.add_item(TesterQueueModeSelect(self))
+        self.toggle_button = next(
+            item for item in self.children
+            if isinstance(item, discord.ui.Button) and item.custom_id == "inglosmn:test-queue:tester-toggle"
+        )
+        self.start_button = next(
+            item for item in self.children
+            if isinstance(item, discord.ui.Button) and item.custom_id == "inglosmn:test-queue:tester-start"
+        )
+        self.apply_button_state()
 
-    @discord.ui.button(label="Open / Close Queue", style=discord.ButtonStyle.primary, emoji="🔄")
+    def apply_button_state(self):
+        mode = self.selected_gamemode
+        if mode is None:
+            self.toggle_button.label = "Select a gamemode"
+            self.toggle_button.style = discord.ButtonStyle.secondary
+            self.toggle_button.emoji = "🎮"
+            self.toggle_button.disabled = True
+            self.start_button.disabled = True
+            return
+
+        is_open = bool(self.queue_states.get(mode, False))
+        self.toggle_button.label = f"Close {mode} Queue" if is_open else f"Open {mode} Queue"
+        self.toggle_button.style = discord.ButtonStyle.danger if is_open else discord.ButtonStyle.success
+        self.toggle_button.emoji = "🔒" if is_open else "🔓"
+        self.toggle_button.disabled = False
+        self.start_button.disabled = not is_open
+
+    async def refresh_selected_mode(self, guild: discord.Guild | None):
+        if guild is None or self.selected_gamemode is None:
+            self.apply_button_state()
+            return
+        config = await self.cog.setting(guild.id)
+        modes = config.get("test_queue_modes") or {}
+        state = bool((modes.get(mode_key(self.selected_gamemode)) or {}).get("open", False))
+        self.queue_states[self.selected_gamemode] = state
+        self.apply_button_state()
+
+    def status_message(self) -> str:
+        mode = self.selected_gamemode
+        if mode is None:
+            return "Select the exact gamemode you want to manage. Each queue has its own open/closed state."
+        is_open = bool(self.queue_states.get(mode, False))
+        status = "🟢 **OPEN**" if is_open else "🔴 **CLOSED**"
+        next_action = (
+            f"Use **Close {mode} Queue** to close it."
+            if is_open else f"Use **Open {mode} Queue** to open it."
+        )
+        start_note = "You can start the next test now." if is_open else "Start Next Test is disabled until this queue is open."
+        return f"Selected **{mode}** — {status}. {next_action} {start_note}"
+
+    @discord.ui.button(
+        label="Select a gamemode",
+        style=discord.ButtonStyle.secondary,
+        emoji="🎮",
+        custom_id="inglosmn:test-queue:tester-toggle",
+        disabled=True,
+    )
     async def toggle_queue(self, interaction: discord.Interaction, button: discord.ui.Button):
-        await self.cog.toggle_test_queue(interaction, self.selected_gamemode)
+        if self.selected_gamemode is None:
+            await interaction.response.send_message("Select a gamemode first.", ephemeral=True)
+            return
+        mode = self.selected_gamemode
+        await self.cog.toggle_test_queue(interaction, mode)
+        await self.refresh_selected_mode(interaction.guild)
+        if interaction.message:
+            await interaction.message.edit(
+                content=self.status_message(),
+                view=self,
+                allowed_mentions=discord.AllowedMentions.none(),
+            )
 
-    @discord.ui.button(label="Start Next Test", style=discord.ButtonStyle.success, emoji="🧪")
+    @discord.ui.button(
+        label="Start Next Test",
+        style=discord.ButtonStyle.success,
+        emoji="🧪",
+        custom_id="inglosmn:test-queue:tester-start",
+        disabled=True,
+    )
     async def start_next(self, interaction: discord.Interaction, button: discord.ui.Button):
-        await self.cog.start_next_test(interaction, self.selected_gamemode)
+        if self.selected_gamemode is None:
+            await interaction.response.send_message("Select a gamemode first.", ephemeral=True)
+            return
+        mode = self.selected_gamemode
+        await self.cog.start_next_test(interaction, mode)
+        await self.refresh_selected_mode(interaction.guild)
+        if interaction.message:
+            await interaction.message.edit(
+                content=self.status_message(),
+                view=self,
+                allowed_mentions=discord.AllowedMentions.none(),
+            )
 
 
 class QueueTestSessionView(discord.ui.View):
@@ -2491,9 +2585,14 @@ class PvPClubTiersCog(commands.Cog):
                 ephemeral=True,
             )
             return
+        queue_modes = config.get("test_queue_modes") or {}
+        queue_states = {
+            mode: bool((queue_modes.get(mode_key(mode)) or {}).get("open", False))
+            for mode in allowed_modes
+        }
         await interaction.followup.send(
-            "Choose one of the gamemodes you are allowed to test:",
-            view=TesterQueueControlsView(self, allowed_modes),
+            "Select the exact gamemode you are managing. The menu shows whether each queue is open or closed:",
+            view=TesterQueueControlsView(self, allowed_modes, queue_states),
             ephemeral=True,
         )
 
@@ -2959,7 +3058,8 @@ class PvPClubTiersCog(commands.Cog):
         mode_config = (config.get("test_queue_modes") or {}).get(mode_key(gamemode), {})
         if not mode_config.get("open", False):
             await interaction.followup.send(
-                f"Open the {gamemode} queue before starting the next test.",
+                f"The **{gamemode}** queue is CLOSED in the bot's settings, so I can't start a test from it. "
+                f"Check that you selected **{gamemode}** (not **Mace** if you meant **Spear Mace**) and open that exact queue.",
                 ephemeral=True,
             )
             return
