@@ -687,21 +687,15 @@ class TesterQueueControlsView(discord.ui.View):
         return f"Selected **{mode}** — {status}. {next_action} {start_note}"
 
     def refresh_selector_options(self):
+        # Recreate the selector with fresh state descriptions rather than
+        # mutating the Select's internal option list.
         selector = next(
             (item for item in self.children if isinstance(item, discord.ui.Select)),
             None,
         )
-        if selector is None:
-            return
-        selector.options = [
-            discord.SelectOption(
-                label=mode,
-                value=mode,
-                description=f"Queue is {'OPEN' if self.queue_states.get(mode, False) else 'CLOSED'}",
-                emoji=MODE_EMOJIS.get(mode),
-            )
-            for mode in self.allowed_modes
-        ]
+        if selector is not None:
+            self.remove_item(selector)
+        self.add_item(TesterQueueModeSelect(self))
 
     @discord.ui.button(
         label="Select a gamemode",
@@ -723,7 +717,6 @@ class TesterQueueControlsView(discord.ui.View):
         await interaction.response.defer()
         result_message = await self.cog.toggle_test_queue(interaction, mode)
         await self.refresh_selected_mode(interaction.guild)
-        self.refresh_selector_options()
         await interaction.edit_original_response(
             content=result_message + "\n\n" + self.status_message(),
             view=self,
@@ -3085,6 +3078,18 @@ class PvPClubTiersCog(commands.Cog):
         ticket_id = uuid4().hex[:10]
         entry = None
         async with self.test_queue_lock:
+            # A tester may close this queue after the first check above but
+            # before this interaction gets the queue lock. Re-read the setting
+            # under the same lock used by toggles so the state cannot go stale.
+            latest_config = await self.setting(guild.id)
+            latest_mode_config = (latest_config.get("test_queue_modes") or {}).get(mode_key(gamemode), {})
+            if not latest_mode_config.get("open", False):
+                await interaction.followup.send(
+                    f"The **{gamemode}** queue is now CLOSED. Refresh Tester Controls and open this exact queue again.",
+                    ephemeral=True,
+                )
+                return
+
             # A player may join several waitlists, but can only be tested in one
             # session at a time. Skip their other entries if one session is
             # already being opened or tested.
