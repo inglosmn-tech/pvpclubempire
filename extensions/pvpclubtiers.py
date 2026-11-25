@@ -493,6 +493,21 @@ class TestQueuePanelView(discord.ui.View):
         await self.cog.show_tester_queue_controls(interaction)
 
 
+class QueueTestSessionView(discord.ui.View):
+    def __init__(self, cog):
+        super().__init__(timeout=None)
+        self.cog = cog
+
+    @discord.ui.button(
+        label="Close Test Session",
+        style=discord.ButtonStyle.danger,
+        emoji="🔒",
+        custom_id="inglotiers:test-session:close",
+    )
+    async def close_session(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await self.cog.ticket_action(interaction, "close")
+
+
 class TicketControlsView(discord.ui.View):
     def __init__(self, cog):
         super().__init__(timeout=None)
@@ -710,6 +725,7 @@ class PvPClubTiersCog(commands.Cog):
         else:
             log.warning("MONGO_URI is not set; PvPClubTiers will be disabled until it is configured.")
         self.bot.add_view(TestQueuePanelView(self))
+        self.bot.add_view(QueueTestSessionView(self))
         self.bot.add_view(TesterApplicationPanelView(self))
         self.bot.add_view(TesterApplicationReviewView(self))
         self.bot.add_view(TicketControlsView(self))
