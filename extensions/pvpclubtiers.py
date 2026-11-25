@@ -347,7 +347,6 @@ class TierInfoPanelView(discord.ui.View):
                 emoji="🌐",
                 url=website_url,
                 row=1,
-                row=1,
             ))
 
     @discord.ui.button(
