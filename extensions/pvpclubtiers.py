@@ -2906,7 +2906,7 @@ class PvPClubTiersCog(commands.Cog):
             if isinstance(started_at, datetime):
                 if started_at.tzinfo is None:
                     started_at = started_at.replace(tzinfo=timezone.utc)
-                if (now - started_at).total_seconds() < 120:
+                if (now - started_at).total_seconds() < 300:
                     continue
 
             queue_id = entry.get("queue_id")
