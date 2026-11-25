@@ -1786,9 +1786,9 @@ class PvPClubTiersCog(commands.Cog):
                 return
 
             await ctx.send(
-                "✅ **PvPClubTiers V3 panels updated!**\\n"
-                f"• Sign Up panel: {request_channel.mention}\\n"
-                f"• Gamemode queues: {queue_channel.mention if queue_channel else 'not created'}\\n"
+                "✅ **PvPClubTiers V3 panels updated!**\n"
+                f"• Sign Up panel: {request_channel.mention}\n"
+                f"• Gamemode queues: {queue_channel.mention if queue_channel else 'not created'}\n"
                 "• Existing queue entries and open/closed queue states were preserved."
             )
         except discord.Forbidden:
