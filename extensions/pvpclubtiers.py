@@ -1255,22 +1255,23 @@ class PvPClubTiersCog(commands.Cog):
                 await channel.delete(reason="Replace thread-only PvPClub queues with a text channel")
             channel = None
 
-        if not isinstance(channel, discord.TextChannel):
-            legacy_forum = next(
-                (
-                    item for item in guild.channels
-                    if forum_type is not None
-                    and isinstance(item, forum_type)
-                    and isinstance(public_category, discord.CategoryChannel)
-                    and item.category_id == public_category.id
-                    and plain_discord_name(item.name) in {"queues", "test-queues"}
-                ),
-                None,
+        legacy_forum = next(
+            (
+                item for item in guild.channels
+                if forum_type is not None
+                and isinstance(item, forum_type)
+                and isinstance(public_category, discord.CategoryChannel)
+                and item.category_id == public_category.id
+                and plain_discord_name(item.name) in {"queues", "test-queues"}
+                and (channel is None or item.id != channel.id)
+            ),
+            None,
+        )
+        if legacy_forum is not None:
+            await legacy_forum.delete(
+                reason="Replace thread-only PvPClub queues with a text channel"
             )
-            if legacy_forum is not None:
-                await legacy_forum.delete(
-                    reason="Replace thread-only PvPClub queues with a text channel"
-                )
+        if not isinstance(channel, discord.TextChannel):
             channel = next(
                 (
                     item for item in guild.text_channels
@@ -1382,22 +1383,23 @@ class PvPClubTiersCog(commands.Cog):
                 await channel.delete(reason="Replace thread-only tier requests with a text panel")
             channel = None
 
-        if not isinstance(channel, discord.TextChannel):
-            legacy_forum = next(
-                (
-                    item for item in guild.channels
-                    if forum_type is not None
-                    and isinstance(item, forum_type)
-                    and isinstance(public_category, discord.CategoryChannel)
-                    and item.category_id == public_category.id
-                    and plain_discord_name(item.name) == "request-test"
-                ),
-                None,
+        legacy_forum = next(
+            (
+                item for item in guild.channels
+                if forum_type is not None
+                and isinstance(item, forum_type)
+                and isinstance(public_category, discord.CategoryChannel)
+                and item.category_id == public_category.id
+                and plain_discord_name(item.name) == "request-test"
+                and (channel is None or item.id != channel.id)
+            ),
+            None,
+        )
+        if legacy_forum is not None:
+            await legacy_forum.delete(
+                reason="Replace thread-only tier requests with a text panel"
             )
-            if legacy_forum is not None:
-                await legacy_forum.delete(
-                    reason="Replace thread-only tier requests with a text panel"
-                )
+        if not isinstance(channel, discord.TextChannel):
             channel = next(
                 (
                     item for item in guild.text_channels
