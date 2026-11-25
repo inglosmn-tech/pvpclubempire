@@ -926,7 +926,7 @@ class PvPClubTiersCog(commands.Cog):
         if not isinstance(channel, discord.TextChannel):
             channel = next(
                 (item for item in guild.text_channels
-                 if re.sub(r"^『[^』]+』\\s*", "", item.name).casefold() in {"queues", "test-queues"}),
+                 if re.sub(r"^『[^』]+』\s*", "", item.name).casefold() in {"queues", "test-queues"}),
                 None,
             )
         queue_overwrites = {
@@ -1172,7 +1172,7 @@ class PvPClubTiersCog(commands.Cog):
         if not isinstance(queue_channel, discord.TextChannel):
             queue_channel = next(
                 (item for item in public_category.text_channels
-                 if re.sub(r"^『[^』]+』\\s*", "", item.name).casefold() in {"queues", "test-queues"}),
+                 if re.sub(r"^『[^』]+』\s*", "", item.name).casefold() in {"queues", "test-queues"}),
                 None,
             )
         queue_overwrites = {
@@ -2167,8 +2167,37 @@ class PvPClubTiersCog(commands.Cog):
             upsert=True,
         )
         await self.refresh_test_queue_panel(interaction.guild)
+        if now_open:
+            waiting = await self.db_call(
+                lambda: list(self.test_queue_entries.find({
+                    "guild_id": interaction.guild.id,
+                    "gamemode": gamemode,
+                    "status": "waiting",
+                }).sort("created_at", ASCENDING).limit(QUEUE_CAPACITY))
+            )
+            if waiting:
+                members = []
+                for row in waiting:
+                    member = interaction.guild.get_member(int(row["discord_id"]))
+                    if member is None:
+                        try:
+                            member = await interaction.guild.fetch_member(int(row["discord_id"]))
+                        except (discord.NotFound, discord.Forbidden, discord.HTTPException):
+                            member = None
+                    if member is not None:
+                        members.append(member)
+                queue_channel_id = config.get("test_queue_channel_id")
+                queue_channel = interaction.guild.get_channel(int(queue_channel_id)) if queue_channel_id else None
+                if members and isinstance(queue_channel, discord.TextChannel):
+                    await queue_channel.send(
+                        content=(
+                            "🟢 " + " ".join(member.mention for member in members)
+                            + f" — the **{gamemode}** test queue is now open. A tester is ready to take players."
+                        ),
+                        allowed_mentions=discord.AllowedMentions(users=members),
+                    )
         await interaction.followup.send(
-            f"The {gamemode} queue is now open. Players can join."
+            f"The {gamemode} queue is now open. Players on the waitlist have been notified."
             if now_open else f"The {gamemode} queue is now closed. Players already waiting will remain queued.",
             ephemeral=True,
         )
