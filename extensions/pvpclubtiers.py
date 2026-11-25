@@ -1872,15 +1872,135 @@ class PvPClubTiersCog(commands.Cog):
             ephemeral=True,
         )
 
-    async def join_test_queue(self, interaction: discord.Interaction, gamemode: str, username: str):
+    async def enqueue_test_member(
+        self,
+        guild: discord.Guild,
+        member: discord.Member,
+        gamemode: str,
+        username: str,
+    ) -> tuple[bool, str]:
+        if gamemode not in GAMEMODES:
+            return False, "That gamemode is not supported."
+        try:
+            username = clean_username(username)
+        except ValueError as exc:
+            return False, str(exc)
+
+        player = await self.get_player(guild.id, member.id)
+        if player and player.get("tier_banned"):
+            return False, (
+                "You are blocked from tier tests. Reason: "
+                + player.get("tier_ban_reason", "No reason supplied")
+            )
+
+        active_session = await self.db_call(
+            self.test_queue_entries.find_one,
+            {
+                "guild_id": guild.id,
+                "discord_id": member.id,
+                "status": {"$in": ["starting", "testing"]},
+            },
+        )
+        if active_session:
+            channel = guild.get_channel(int(active_session.get("channel_id", 0) or 0))
+            return False, (
+                "You already have an active test session."
+                + (f" Continue in {channel.mention}." if channel else "")
+            )
+
+        active_ticket = await self.db_call(
+            self.tickets.find_one,
+            {
+                "guild_id": guild.id,
+                "discord_id": member.id,
+                "status": {"$in": ["open", "claimed"]},
+            },
+        )
+        if active_ticket:
+            active_channel_id = active_ticket.get("channel_id") or active_ticket.get("channelId")
+            active_channel = guild.get_channel(int(active_channel_id)) if active_channel_id else None
+            return False, (
+                "You already have an active PvPClubTiers test session."
+                + (f" {active_channel.mention}" if active_channel else "")
+            )
+
+        already_waiting = await self.db_call(
+            self.test_queue_entries.find_one,
+            {
+                "guild_id": guild.id,
+                "discord_id": member.id,
+                "gamemode": gamemode,
+                "status": "waiting",
+            },
+        )
+        if already_waiting:
+            return True, f"You are already on the **{gamemode}** waitlist."
+
+        count = await self.db_call(
+            self.test_queue_entries.count_documents,
+            {"guild_id": guild.id, "gamemode": gamemode, "status": "waiting"},
+        )
+        if count >= QUEUE_CAPACITY:
+            return False, f"The **{gamemode}** waitlist is full ({QUEUE_CAPACITY}/{QUEUE_CAPACITY})."
+
+        # Save the IGN once on the player's profile. Future queue entries reuse it.
+        await self.get_or_create_player(guild.id, member, username)
+        await self.db_call(
+            self.test_queue_entries.insert_one,
+            {
+                "queue_id": uuid4().hex[:12],
+                "guild_id": guild.id,
+                "gamemode": gamemode,
+                "discord_id": member.id,
+                "username": username,
+                "status": "waiting",
+                "created_at": datetime.now(timezone.utc),
+            },
+        )
+        mode_config = (await self.setting(guild.id)).get("test_queue_modes", {}).get(mode_key(gamemode), {})
+        if mode_config.get("open"):
+            return True, f"✅ Joined the **{gamemode}** queue as **{username}**."
+        return True, (
+            f"✅ Joined the **{gamemode}** waitlist as **{username}**. "
+            "The queue is closed right now; you'll be pinged when a tester opens it."
+        )
+
+    async def save_ign_and_show_queue_modes(self, interaction: discord.Interaction, username: str):
         if not await self.require_db(interaction):
             return
         await interaction.response.defer(ephemeral=True, thinking=True)
-        if gamemode not in GAMEMODES:
-            await interaction.followup.send("That gamemode is not supported.", ephemeral=True)
-            return
         if interaction.guild is None or not isinstance(interaction.user, discord.Member):
-            await interaction.followup.send("Join a test queue from inside the server.", ephemeral=True)
+            await interaction.followup.send("Use this panel inside the server.", ephemeral=True)
+            return
+        try:
+            username = clean_username(username)
+            await self.get_or_create_player(interaction.guild.id, interaction.user, username)
+        except ValueError as exc:
+            await interaction.followup.send(str(exc), ephemeral=True)
+            return
+        except Exception:
+            log.exception("Could not save the Minecraft IGN for %s", interaction.user.id)
+            await interaction.followup.send("I couldn't save your IGN. Please try again or contact staff.", ephemeral=True)
+            return
+
+        await interaction.followup.send(
+            f"✅ Saved your Minecraft IGN as **{username}**.\n"
+            "Choose one or more gamemodes below. You only need to enter your IGN once.",
+            view=TestQueueJoinModesView(self, username),
+            ephemeral=True,
+        )
+
+    async def join_selected_test_queues(
+        self,
+        interaction: discord.Interaction,
+        gamemodes: list[str],
+        username: str,
+    ):
+        if not await self.require_db(interaction):
+            return
+        await interaction.response.defer(ephemeral=True, thinking=True)
+        if interaction.guild is None or not isinstance(interaction.user, discord.Member):
+            await interaction.followup.send("Use this panel inside the server.", ephemeral=True)
             return
         try:
             username = clean_username(username)
@@ -1888,107 +2008,68 @@ class PvPClubTiersCog(commands.Cog):
             await interaction.followup.send(str(exc), ephemeral=True)
             return
 
-        guild = interaction.guild
+        results = []
         async with self.test_queue_lock:
-            config = await self.setting(guild.id)
-            mode_config = (config.get("test_queue_modes") or {}).get(mode_key(gamemode), {})
-            if not mode_config.get("open", False):
-                await interaction.followup.send(
-                    f"The {gamemode} queue is currently closed. Check the queue panel for open gamemodes.",
-                    ephemeral=True,
-                )
-                return
-
-            player = await self.get_player(guild.id, interaction.user.id)
-            if player and player.get("tier_banned"):
-                await interaction.followup.send(
-                    "You are blocked from tier tests. Reason: "
-                    + player.get("tier_ban_reason", "No reason supplied"),
-                    ephemeral=True,
-                )
-                return
-
-            active_queue = await self.db_call(
-                self.test_queue_entries.find_one,
-                {
-                    "guild_id": guild.id,
-                    "discord_id": interaction.user.id,
-                    "status": {"$in": ["waiting", "starting", "testing"]},
-                },
-            )
-            if active_queue:
-                queued_mode = active_queue.get("gamemode", "another gamemode")
-                if active_queue.get("status") == "testing":
-                    active_channel = guild.get_channel(int(active_queue.get("channel_id", 0) or 0))
-                    status_text = (
-                        f"Your test session is already open: {active_channel.mention}"
-                        if active_channel else "Your test session is already active."
+            for gamemode in gamemodes:
+                try:
+                    ok, message = await self.enqueue_test_member(
+                        interaction.guild, interaction.user, gamemode, username,
                     )
-                else:
-                    status_text = f"You are already in the {queued_mode} queue."
-                await interaction.followup.send(status_text, ephemeral=True)
-                return
+                except Exception:
+                    log.exception("Could not queue %s for %s", interaction.user.id, gamemode)
+                    ok, message = False, f"Could not join {gamemode}. Please try again."
+                results.append(("✅ " if ok else "❌ ") + message)
 
-            active_ticket = await self.db_call(
-                self.tickets.find_one,
-                {
-                    "guild_id": guild.id,
-                    "discord_id": interaction.user.id,
-                    "status": {"$in": ["open", "claimed"]},
-                },
-            )
-            if active_ticket:
-                active_channel_id = active_ticket.get("channel_id") or active_ticket.get("channelId")
-                active_channel = guild.get_channel(int(active_channel_id)) if active_channel_id else None
-                await interaction.followup.send(
-                    "You already have an active PvPClubTiers test session."
-                    + (f" {active_channel.mention}" if active_channel else ""),
-                    ephemeral=True,
-                )
-                return
+        await self.refresh_test_queue_panel(interaction.guild)
+        await interaction.followup.send("\n".join(results), ephemeral=True)
 
-            queue_id = uuid4().hex[:12]
+    async def handle_queue_join_button(self, interaction: discord.Interaction, gamemode: str):
+        if not await self.require_db(interaction):
+            return
+        if not isinstance(interaction.user, discord.Member):
+            await interaction.response.send_message("Use this queue inside the server.", ephemeral=True)
+            return
+        player = await self.get_player(interaction.guild.id, interaction.user.id)
+        username = (player or {}).get("username")
+        if not username or not re.fullmatch(r"[A-Za-z0-9_]{3,16}", str(username)):
+            await interaction.response.send_modal(TestQueueJoinModal(self, gamemode))
+            return
+        await self.join_test_queue(interaction, gamemode, username)
+
+    async def join_test_queue(self, interaction: discord.Interaction, gamemode: str, username: str):
+        if not await self.require_db(interaction):
+            return
+        await interaction.response.defer(ephemeral=True, thinking=True)
+        if interaction.guild is None or not isinstance(interaction.user, discord.Member):
+            await interaction.followup.send("Join a test queue from inside the server.", ephemeral=True)
+            return
+        async with self.test_queue_lock:
             try:
-                await self.db_call(
-                    self.test_queue_entries.insert_one,
-                    {
-                        "queue_id": queue_id,
-                        "guild_id": guild.id,
-                        "gamemode": gamemode,
-                        "discord_id": interaction.user.id,
-                        "username": username,
-                        "status": "waiting",
-                        "created_at": datetime.now(timezone.utc),
-                    },
+                ok, message = await self.enqueue_test_member(
+                    interaction.guild, interaction.user, gamemode, username,
                 )
             except Exception:
                 log.exception("Could not add %s to the %s test queue", interaction.user.id, gamemode)
-                await interaction.followup.send(
-                    "I couldn't add you to the queue. Please try again or contact staff.",
-                    ephemeral=True,
-                )
-                return
+                ok, message = False, "I couldn't add you to the queue. Please try again or contact staff."
+        await self.refresh_test_queue_panel(interaction.guild)
+        await interaction.followup.send(message if ok else f"❌ {message}", ephemeral=True)
 
-        await self.refresh_test_queue_panel(guild)
-        await interaction.followup.send(
-            f"✅ You joined the {gamemode} test queue as {username}. "
-            "You can leave while you are waiting by pressing Leave Queue.",
-            ephemeral=True,
-        )
-
-    async def leave_test_queue(self, interaction: discord.Interaction):
+    async def leave_test_queue(self, interaction: discord.Interaction, gamemode: str | None = None):
         if not await self.require_db(interaction):
             return
         await interaction.response.defer(ephemeral=True, thinking=True)
         guild = interaction.guild
+        query = {
+            "guild_id": guild.id,
+            "discord_id": interaction.user.id,
+            "status": "waiting",
+        }
+        if gamemode:
+            query["gamemode"] = gamemode
         async with self.test_queue_lock:
             result = await self.db_call(
-                self.test_queue_entries.update_one,
-                {
-                    "guild_id": guild.id,
-                    "discord_id": interaction.user.id,
-                    "status": "waiting",
-                },
+                self.test_queue_entries.update_many,
+                query,
                 {"$set": {
                     "status": "cancelled",
                     "cancelled_at": datetime.now(timezone.utc),
@@ -2005,7 +2086,8 @@ class PvPClubTiersCog(commands.Cog):
             )
         if result.modified_count:
             await self.refresh_test_queue_panel(guild)
-            await interaction.followup.send("✅ You have left the test queue.", ephemeral=True)
+            label = f"the **{gamemode}** waitlist" if gamemode else "all your waitlists"
+            await interaction.followup.send(f"✅ You left {label}.", ephemeral=True)
         elif active and active.get("status") == "testing":
             channel = guild.get_channel(int(active.get("channel_id", 0) or 0))
             await interaction.followup.send(
@@ -2014,12 +2096,54 @@ class PvPClubTiersCog(commands.Cog):
                 ephemeral=True,
             )
         elif active:
+            await interaction.followup.send("A tester is opening your session right now. Please wait a moment.", ephemeral=True)
+        else:
             await interaction.followup.send(
-                "A tester is opening your session right now. Please wait a moment.",
+                f"You are not waiting in the **{gamemode}** queue." if gamemode
+                else "You are not currently on any test waitlist.",
                 ephemeral=True,
             )
-        else:
-            await interaction.followup.send("You are not currently waiting in a test queue.", ephemeral=True)
+
+    async def show_my_test_waitlists(self, interaction: discord.Interaction):
+        if not await self.require_db(interaction):
+            return
+        await interaction.response.defer(ephemeral=True, thinking=True)
+        rows = await self.db_call(
+            lambda: list(self.test_queue_entries.find({
+                "guild_id": interaction.guild.id,
+                "discord_id": interaction.user.id,
+                "status": "waiting",
+            }).sort("created_at", ASCENDING))
+        )
+        if not rows:
+            await interaction.followup.send("You are not on any test waitlists right now.", ephemeral=True)
+            return
+        lines = []
+        for row in rows:
+            position = await self.db_call(
+                self.test_queue_entries.count_documents,
+                {
+                    "guild_id": interaction.guild.id,
+                    "gamemode": row["gamemode"],
+                    "status": "waiting",
+                    "created_at": {"$lte": row["created_at"]},
+                },
+            )
+            lines.append(
+                f"{MODE_EMOJIS.get(row['gamemode'], '🎮')} **{row['gamemode']}** — "
+                f"position **{position}** · IGN {row.get('username', 'Unknown')}"
+            )
+        await interaction.followup.send(
+            embed=discord.Embed(
+                title="📋 Your test waitlists",
+                description="\n".join(lines),
+                colour=0x55DDEB,
+            ),
+            ephemeral=True,
+        )
+
+    async def leave_all_test_waitlists(self, interaction: discord.Interaction):
+        await self.leave_test_queue(interaction, None)
 
     async def toggle_test_queue(self, interaction: discord.Interaction, gamemode: str):
         if not await self.require_db(interaction):
