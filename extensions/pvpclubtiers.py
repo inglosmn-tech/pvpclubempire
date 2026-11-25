@@ -994,7 +994,14 @@ class PvPClubTiersCog(commands.Cog):
             return channel
         overwrite = {guild.default_role: discord.PermissionOverwrite(view_channel=True)}
         if send_disabled:
-            overwrite[guild.default_role].send_messages = False
+            overwrite[guild.default_role] = discord.PermissionOverwrite(
+                view_channel=True,
+                send_messages=False,
+                read_message_history=True,
+                create_public_threads=False,
+                create_private_threads=False,
+                send_messages_in_threads=False,
+            )
         if guild.me:
             overwrite[guild.me] = discord.PermissionOverwrite(
                 view_channel=True, send_messages=True, read_message_history=True,
@@ -1488,6 +1495,8 @@ class PvPClubTiersCog(commands.Cog):
         queue_overwrites = {
             guild.default_role: discord.PermissionOverwrite(
                 view_channel=True, send_messages=False, read_message_history=True,
+                create_public_threads=False, create_private_threads=False,
+                send_messages_in_threads=False,
             ),
             bot_member: discord.PermissionOverwrite(
                 view_channel=True, send_messages=True, embed_links=True,
