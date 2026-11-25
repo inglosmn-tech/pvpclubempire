@@ -452,7 +452,7 @@ class OwnerSetTierView(discord.ui.View):
 
 class TestQueueJoinModal(discord.ui.Modal):
     def __init__(self, cog, gamemode: str | None = None):
-        title = f"Join {gamemode} queue" if gamemode else "Set Minecraft IGN"
+        title = f"Join {gamemode} queue" if gamemode else "Sign Up"
         super().__init__(title=title)
         self.cog = cog
         self.gamemode = gamemode
@@ -542,7 +542,7 @@ class TestQueuePanelView(discord.ui.View):
         self.cog = cog
 
     @discord.ui.button(
-        label="Pick gamemodes / Set IGN",
+        label="Sign Up",
         style=discord.ButtonStyle.success,
         emoji="✅",
         custom_id="inglotiers:test-queue:join",
@@ -584,16 +584,6 @@ class TestQueuePanelView(discord.ui.View):
             return
 
         await interaction.response.send_modal(TestQueueJoinModal(self.cog))
-
-    @discord.ui.button(
-        label="My waitlists",
-        style=discord.ButtonStyle.secondary,
-        emoji="📋",
-        custom_id="inglotiers:test-queue:my-waitlists",
-        row=1,
-    )
-    async def my_waitlists(self, interaction: discord.Interaction, button: discord.ui.Button):
-        await self.cog.show_my_test_waitlists(interaction)
 
     @discord.ui.button(
         label="Leave all waitlists",
@@ -1511,9 +1501,9 @@ class PvPClubTiersCog(commands.Cog):
             except (discord.NotFound, discord.Forbidden, discord.HTTPException, ValueError):
                 panel = None
         embed = discord.Embed(
-            title="📥 Request a tier test",
+            title="📥 Sign Up for a Tier Test",
             description=(
-                "Enter your Minecraft IGN once, then choose the gamemode queues that are currently open. "
+                "Click **Sign Up** to save your Minecraft IGN, then choose the gamemode queues that are currently open. "
                 "You can join multiple open queues at the same time.\n\n"
                 "You cannot join a closed queue. When a tester opens a gamemode queue, its waiting players "
                 "are notified. When your turn arrives, the bot opens a private session for you and the assigned tester."
@@ -1523,9 +1513,9 @@ class PvPClubTiersCog(commands.Cog):
         embed.add_field(
             name="How it works",
             value=(
-                "1. Set your IGN.\n"
+                "1. Press **Sign Up** and enter your Minecraft IGN.\n"
                 "2. Select one or more **open** gamemodes.\n"
-                "3. Check **My waitlists** or leave all queues whenever you need."
+                "3. Use **Leave all waitlists** to cancel your waiting entries."
             ),
             inline=False,
         )
@@ -1777,6 +1767,35 @@ class PvPClubTiersCog(commands.Cog):
         await self.ensure_test_queue_panel(guild)
         await self.ensure_test_request_panel(guild)
         return queue_channel, session_category, resolved_roles, deleted_old_channels, failed_old_channels
+
+    @commands.command(name="v3")
+    @commands.guild_only()
+    @commands.has_guild_permissions(manage_guild=True)
+    async def v3(self, ctx: commands.Context):
+        """Refresh the V3 signup and queue panels without resetting queue entries."""
+        if self.db is None:
+            await ctx.reply("PvPClubTiers database is not connected. Check MONGO_URI in Render and restart the bot.")
+            return
+
+        try:
+            await ctx.reply("Refreshing the PvPClubTiers V3 signup and queue panels…")
+            queue_channel = await self.ensure_test_queue_panel(ctx.guild)
+            request_channel = await self.ensure_test_request_panel(ctx.guild)
+            if request_channel is None:
+                await ctx.send("I couldn't find the PvPClubTiers category. Run `?tiersetup` first.")
+                return
+
+            await ctx.send(
+                "✅ **PvPClubTiers V3 panels updated!**\\n"
+                f"• Sign Up panel: {request_channel.mention}\\n"
+                f"• Gamemode queues: {queue_channel.mention if queue_channel else 'not created'}\\n"
+                "• Existing queue entries and open/closed queue states were preserved."
+            )
+        except discord.Forbidden:
+            await ctx.send("I need Manage Channels, View Channels and Send Messages to update the V3 panels.")
+        except Exception:
+            log.exception("?v3 failed in guild %s", ctx.guild.id)
+            await ctx.send("The V3 panel refresh failed. Check the Render logs for the exact error.")
 
     @commands.command(name="tiersetup")
     @commands.guild_only()
@@ -2622,44 +2641,6 @@ class PvPClubTiersCog(commands.Cog):
                 else "You are not currently on any test waitlist.",
                 ephemeral=True,
             )
-
-    async def show_my_test_waitlists(self, interaction: discord.Interaction):
-        if not await self.require_db(interaction):
-            return
-        await interaction.response.defer(ephemeral=True, thinking=True)
-        rows = await self.db_call(
-            lambda: list(self.test_queue_entries.find({
-                "guild_id": interaction.guild.id,
-                "discord_id": interaction.user.id,
-                "status": "waiting",
-            }).sort("created_at", ASCENDING))
-        )
-        if not rows:
-            await interaction.followup.send("You are not on any test waitlists right now.", ephemeral=True)
-            return
-        lines = []
-        for row in rows:
-            position = await self.db_call(
-                self.test_queue_entries.count_documents,
-                {
-                    "guild_id": interaction.guild.id,
-                    "gamemode": row["gamemode"],
-                    "status": "waiting",
-                    "created_at": {"$lte": row["created_at"]},
-                },
-            )
-            lines.append(
-                f"{MODE_EMOJIS.get(row['gamemode'], '🎮')} **{row['gamemode']}** — "
-                f"position **{position}** · IGN {row.get('username', 'Unknown')}"
-            )
-        await interaction.followup.send(
-            embed=discord.Embed(
-                title="📋 Your test waitlists",
-                description="\n".join(lines),
-                colour=0x55DDEB,
-            ),
-            ephemeral=True,
-        )
 
     async def leave_all_test_waitlists(self, interaction: discord.Interaction):
         await self.leave_test_queue(interaction, None)
