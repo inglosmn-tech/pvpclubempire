@@ -304,49 +304,82 @@ class LevelingCog(commands.Cog):
         except discord.HTTPException:
             log.warning("Could not update level roles for %s in guild %s", member.id, member.guild.id)
 
-    @app_commands.command(name="meow-setup", description="Automatically set up the meow leveling system.")
-    @app_commands.guild_only()
-    @app_commands.checks.has_permissions(manage_guild=True)
-    async def meow_setup(self, interaction: discord.Interaction):
-        guild = interaction.guild
+    async def _configure_levels(self, guild: discord.Guild) -> str:
         bot_member = guild.me
         if not bot_member or not bot_member.guild_permissions.manage_channels or not bot_member.guild_permissions.manage_roles:
-            await interaction.response.send_message("I need Manage Channels and Manage Roles. Enable both and try again.", ephemeral=True)
-            return
-        await interaction.response.defer(ephemeral=True, thinking=True)
+            raise PermissionError("I need Manage Channels and Manage Roles. Enable both and try again.")
+
         config = self._config(guild.id)
         channel = guild.get_channel(int(config.get("channel_id", 0) or 0)) if config.get("channel_id") else None
         channel_created = bool(config.get("generated_channel", False))
         if not isinstance(channel, discord.TextChannel):
-            channel = discord.utils.get(guild.text_channels, name="🐾-level-ups") or discord.utils.get(guild.text_channels, name="meow-levels")
+            channel = discord.utils.get(guild.text_channels, name="level-ups")
+            if channel is None:
+                channel = next(
+                    (item for item in guild.text_channels if item.name in LEGACY_LEVEL_CHANNEL_NAMES),
+                    None,
+                )
             if channel is None:
                 overwrites = {
-                    guild.default_role: discord.PermissionOverwrite(view_channel=True, read_message_history=True, send_messages=False, add_reactions=True),
-                    bot_member: discord.PermissionOverwrite(view_channel=True, send_messages=True, embed_links=True, read_message_history=True, manage_messages=True),
+                    guild.default_role: discord.PermissionOverwrite(
+                        view_channel=True, read_message_history=True,
+                        send_messages=False, add_reactions=True,
+                    ),
+                    bot_member: discord.PermissionOverwrite(
+                        view_channel=True, send_messages=True, embed_links=True,
+                        read_message_history=True, manage_messages=True,
+                    ),
                 }
-                channel = await guild.create_text_channel("🐾-level-ups", overwrites=overwrites, reason="PVPClub Empire meow leveling setup")
+                channel = await guild.create_text_channel(
+                    "level-ups", overwrites=overwrites,
+                    reason="PVPClub Empire leveling setup",
+                )
                 channel_created = True
+        if channel.name in LEGACY_LEVEL_CHANNEL_NAMES:
+            try:
+                await channel.edit(name="level-ups", reason="Use neutral leveling channel name")
+            except discord.HTTPException:
+                log.warning("Could not rename legacy leveling channel in guild %s", guild.id)
+
         config["generated_channel"] = bool(channel_created)
         config["channel_id"] = channel.id
         roles_created, roles_existing = [], []
-        generated_role_ids = set(int(x) for x in config.get("generated_role_ids", []) if str(x).isdigit())
+        generated_role_ids = {
+            int(x) for x in config.get("generated_role_ids", []) if str(x).isdigit()
+        }
         role_map = config.setdefault("roles", {})
         for milestone, name, color in ROLE_MILESTONES:
             role = guild.get_role(int(role_map.get(str(milestone), 0))) if role_map.get(str(milestone)) else None
             role = role or discord.utils.get(guild.roles, name=name)
             if role is None:
-                role = await guild.create_role(name=name, colour=discord.Colour(color), mentionable=False,
-                                               reason="PVPClub Empire level milestone role")
+                role = await guild.create_role(
+                    name=name, colour=discord.Colour(color), mentionable=False,
+                    reason="PVPClub Empire level milestone role",
+                )
                 roles_created.append(name)
                 generated_role_ids.add(role.id)
             else:
-                roles_existing.append(name)
+                if role.id in generated_role_ids and role.name in LEGACY_LEVEL_ROLE_NAMES:
+                    try:
+                        await role.edit(
+                            name=name, colour=discord.Colour(color),
+                            reason="Use neutral leveling role name",
+                        )
+                    except discord.HTTPException:
+                        log.warning("Could not rename legacy level role %s in guild %s", role.id, guild.id)
+                roles_existing.append(role.name)
             role_map[str(milestone)] = role.id
+
         config.setdefault("role_mode", "replace")
         config.setdefault("text_cooldown", 60)
         config.setdefault("voice_enabled", True)
-        ignored = set(int(x) for x in config.get("ignored_channels", []) if str(x).isdigit())
-        ignored.update(ch.id for ch in guild.text_channels if ch.name.casefold() in {"afk", "bot-commands"})
+        ignored = {
+            int(x) for x in config.get("ignored_channels", []) if str(x).isdigit()
+        }
+        ignored.update(
+            ch.id for ch in guild.text_channels
+            if ch.name.casefold() in {"afk", "bot-commands"}
+        )
         if guild.afk_channel:
             ignored.add(guild.afk_channel.id)
         config["ignored_channels"] = sorted(ignored)
@@ -354,26 +387,55 @@ class LevelingCog(commands.Cog):
         config.setdefault("multipliers", {})
         config["generated_role_ids"] = sorted(generated_role_ids)
         await self.bot.store.save()
-        note = "\n".join([
+
+        return "\n".join([
             f"**Level-up channel:** {channel.mention} {'(created)' if channel_created else '(existing)'}",
             f"**Created roles:** {', '.join(roles_created) if roles_created else 'None'}",
             f"**Existing roles:** {', '.join(roles_existing) if roles_existing else 'None'}",
             "**Defaults:** 15–25 XP/message · 60s text cooldown · voice XP every 60s · role mode: replace",
-            "**Ignored:** channels named `afk` and `bot-commands`, plus the server AFK channel",
-            "**Role hierarchy:** move my highest role above the six generated cat roles so I can assign them.",
+            "**Ignored:** channels named afk and bot-commands, plus the server AFK channel",
+            "**Role hierarchy:** move my highest role above the six generated level roles so I can assign them.",
         ])
-        await interaction.followup.send(embed=level_embed("🐾 Meow leveling setup complete", note, 0x57D69A), ephemeral=True)
 
-    @app_commands.command(name="meow-reset", description="Reset server leveling data or remove generated setup assets.")
+    @app_commands.command(name="level-setup", description="Set up server leveling, XP and milestone roles.")
     @app_commands.guild_only()
     @app_commands.checks.has_permissions(manage_guild=True)
-    async def meow_reset(self, interaction: discord.Interaction):
+    async def level_setup(self, interaction: discord.Interaction):
+        await interaction.response.defer(ephemeral=True, thinking=True)
+        try:
+            note = await self._configure_levels(interaction.guild)
+        except PermissionError as exc:
+            await interaction.followup.send(str(exc), ephemeral=True)
+            return
+        await interaction.followup.send(
+            embed=level_embed("Leveling setup complete", note, 0x57D69A),
+            ephemeral=True,
+        )
+
+    @commands.command(name="levelsetup")
+    @commands.guild_only()
+    @commands.has_guild_permissions(manage_guild=True)
+    async def levelsetup_prefix(self, ctx: commands.Context):
+        try:
+            note = await self._configure_levels(ctx.guild)
+        except PermissionError as exc:
+            await ctx.reply(str(exc), mention_author=False)
+            return
+        await ctx.reply(
+            embed=level_embed("Leveling setup complete", note, 0x57D69A),
+            mention_author=False,
+        )
+
+    @app_commands.command(name="level-reset", description="Reset server leveling data or remove generated setup assets.")
+    @app_commands.guild_only()
+    @app_commands.checks.has_permissions(manage_guild=True)
+    async def level_reset(self, interaction: discord.Interaction):
         await interaction.response.send_message(
-            embed=level_embed("⚠️ Reset meow leveling?", "Choose an action below. Resetting XP cannot be undone."),
+            embed=level_embed("⚠️ Reset server leveling?", "Choose an action below. Resetting XP cannot be undone."),
             view=LevelResetView(self, interaction.guild, interaction.user.id), ephemeral=True,
         )
 
-    @app_commands.command(name="rank", description="View your or another member's meow level and XP.")
+    @app_commands.command(name="rank", description="View your or another member's level and XP.")
     @app_commands.guild_only()
     async def rank(self, interaction: discord.Interaction, member: discord.Member | None = None):
         target = member or interaction.user
@@ -397,17 +459,17 @@ class LevelingCog(commands.Cog):
             current_role = role.mention
         voice_seconds = data["voice_seconds"]
         voice_time = f"{voice_seconds // 3600}h {(voice_seconds % 3600) // 60}m"
-        e = level_embed(f"🐱 {target.display_name} • Cat Rank", color=0xFF9CEE)
+        e = level_embed(f"{target.display_name} • Level Rank", color=0x5865F2)
         e.set_thumbnail(url=target.display_avatar.url)
         e.add_field(name="Level", value=f"**{level}**", inline=True)
         e.add_field(name="Server rank", value=f"**#{rank_num}**" if rank_num else "Unranked", inline=True)
-        e.add_field(name="Cat role", value=current_role, inline=True)
+        e.add_field(name="Level role", value=current_role, inline=True)
         e.add_field(name="XP progress", value=f"{progress_bar(in_level, required)}\n**{in_level:,} / {required:,} XP** to next level", inline=False)
         e.add_field(name="Lifetime XP", value=f"{data['total_xp']:,}", inline=True)
         e.add_field(name="Voice time / XP", value=f"{voice_time} / {data['voice_xp']:,} XP", inline=True)
         await interaction.response.send_message(embed=e)
 
-    @app_commands.command(name="leaderboard", description="View the server's top meow levels.")
+    @app_commands.command(name="leaderboard", description="View the server's top levels.")
     @app_commands.guild_only()
     async def leaderboard(self, interaction: discord.Interaction):
         rows = await self.bot.store.get_level_leaderboard(interaction.guild_id, 10, 0)
@@ -416,7 +478,7 @@ class LevelingCog(commands.Cog):
         for index, row in enumerate(rows, 1):
             marker = medals[index - 1] if index <= 3 else f"`#{index}`"
             lines.append(f"{marker} <@{row['user_id']}> — **Level {row['level']}** · {row['total_xp']:,} XP")
-        e = level_embed("🏆 Empire Catnip Leaderboard", "\n".join(lines) or "No XP yet. Be the first kitten! 🐾")
+        e = level_embed("🏆 Level Leaderboard", "\n".join(lines) or "No XP earned yet. Be the first to reach the leaderboard.")
         await interaction.response.send_message(embed=e, view=LeaderboardView(self, interaction.guild_id))
 
 
