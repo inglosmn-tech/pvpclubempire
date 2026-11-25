@@ -675,9 +675,11 @@ class PvPClubTiersCog(commands.Cog):
         self.bot.add_view(MatchmakingQueueView(self))
         self.bot.add_view(DuelResultView(self))
         self.trivia_watcher.start()
+        self.queue_recovery_watcher.start()
 
     def cog_unload(self):
         self.trivia_watcher.cancel()
+        self.queue_recovery_watcher.cancel()
         if self.mongo_client:
             self.mongo_client.close()
 
@@ -2868,6 +2870,7 @@ class PvPClubTiersCog(commands.Cog):
     async def recover_interrupted_test_starts(self, guild: discord.Guild):
         """Repair queue entries if the process stopped while a tester was opening a session."""
         now = datetime.now(timezone.utc)
+        changed = False
         entries = await self.db_call(
             lambda: list(self.test_queue_entries.find({
                 "guild_id": guild.id,
@@ -2906,7 +2909,7 @@ class PvPClubTiersCog(commands.Cog):
                         channel = None
                 if channel is not None:
                     recovered_status = "completed" if ticket.get("status") == "completed" else "testing"
-                    await self.db_call(
+                    result = await self.db_call(
                         self.test_queue_entries.update_one,
                         {"queue_id": queue_id, "status": "starting"},
                         {"$set": {
@@ -2917,6 +2920,7 @@ class PvPClubTiersCog(commands.Cog):
                             "recovered_at": now,
                         }},
                     )
+                    changed = changed or bool(result.modified_count)
                     continue
 
                 await self.db_call(
@@ -2928,7 +2932,7 @@ class PvPClubTiersCog(commands.Cog):
                         "migration_note": "Session channel was missing during startup recovery",
                     }},
                 )
-                await self.db_call(
+                result = await self.db_call(
                     self.test_queue_entries.update_one,
                     {"queue_id": queue_id, "status": "starting"},
                     {"$set": {
@@ -2937,6 +2941,7 @@ class PvPClubTiersCog(commands.Cog):
                         "recovery_note": "The session channel no longer exists",
                     }},
                 )
+                changed = changed or bool(result.modified_count)
                 continue
 
             # No ticket record was committed. Remove a channel that may have been
@@ -2949,7 +2954,7 @@ class PvPClubTiersCog(commands.Cog):
                             await orphan.delete(reason="Removing an incomplete PvPClubTiers queue session")
                         except discord.HTTPException:
                             log.exception("Could not remove incomplete queue session %s", orphan.id)
-            await self.db_call(
+            result = await self.db_call(
                 self.test_queue_entries.update_one,
                 {"queue_id": queue_id, "status": "starting"},
                 {"$set": {
@@ -2962,6 +2967,22 @@ class PvPClubTiersCog(commands.Cog):
                     "recovery_note": "Interrupted session creation was returned to the queue",
                 }},
             )
+            changed = changed or bool(result.modified_count)
+
+        if changed:
+            await self.refresh_test_queue_panel(guild)
+
+    @tasks.loop(minutes=1)
+    async def queue_recovery_watcher(self):
+        for guild in list(self.bot.guilds):
+            try:
+                await self.recover_interrupted_test_starts(guild)
+            except Exception:
+                log.exception("Could not recover interrupted test queue entries in guild %s", guild.id)
+
+    @queue_recovery_watcher.before_loop
+    async def before_queue_recovery_watcher(self):
+        await self.bot.wait_until_ready()
 
     @commands.Cog.listener()
     async def on_ready(self):
