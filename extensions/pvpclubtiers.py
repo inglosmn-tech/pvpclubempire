@@ -469,7 +469,7 @@ class TestQueueJoinModal(discord.ui.Modal):
         if self.gamemode:
             await self.cog.join_test_queue(interaction, self.gamemode, str(self.username))
         else:
-            await self.cog.save_ign_and_show_queue_modes(interaction, str(self.username))
+            await self.cog.register_test_signup(interaction, str(self.username))
 
 
 class TestQueueJoinModesSelect(discord.ui.Select):
@@ -538,7 +538,7 @@ class GamemodeTestQueueView(discord.ui.View):
 
 
 class TestQueuePanelView(discord.ui.View):
-    """Persistent request panel: save one IGN, join multiple waitlists, manage entries."""
+    """Persistent global signup panel: save one IGN and join every open gamemode queue."""
 
     def __init__(self, cog):
         super().__init__(timeout=None)
@@ -572,18 +572,7 @@ class TestQueuePanelView(discord.ui.View):
 
         username = (player or {}).get("username")
         if username and re.fullmatch(r"[A-Za-z0-9_]{3,16}", str(username)):
-            open_modes = await self.cog.open_test_queue_modes(interaction.guild)
-            if not open_modes:
-                await interaction.response.send_message(
-                    "No test queues are open right now. You can join as soon as a tester opens one.",
-                    ephemeral=True,
-                )
-                return
-            await interaction.response.send_message(
-                f"Your saved Minecraft IGN is **{username}**. Choose one or more open gamemodes:",
-                view=TestQueueJoinModesView(self.cog, str(username), open_modes),
-                ephemeral=True,
-            )
+            await self.cog.register_test_signup(interaction, str(username))
             return
 
         await interaction.response.send_modal(TestQueueJoinModal(self.cog))
@@ -833,6 +822,7 @@ class PvPClubTiersCog(commands.Cog):
                 self.duels = self.db["duels"]
                 self.matchmaking_queue = self.db["matchmaking_queue"]
                 self.test_queue_entries = self.db["test_queue_entries"]
+                self.test_queue_signups = self.db["test_queue_signups"]
                 self.trivia_scores = self.db["trivia_scores"]
                 self.trivia_answers = self.db["trivia_answers"]
                 self.tester_applications = self.db["tester_applications"]
@@ -845,6 +835,8 @@ class PvPClubTiersCog(commands.Cog):
                 await asyncio.to_thread(self.matchmaking_queue.create_index, [("guild_id", ASCENDING), ("user_id", ASCENDING), ("status", ASCENDING)])
                 await asyncio.to_thread(self.test_queue_entries.create_index, [("guild_id", ASCENDING), ("gamemode", ASCENDING), ("status", ASCENDING), ("created_at", ASCENDING)])
                 await asyncio.to_thread(self.test_queue_entries.create_index, [("guild_id", ASCENDING), ("discord_id", ASCENDING), ("status", ASCENDING)])
+                await asyncio.to_thread(self.test_queue_signups.create_index, [("guild_id", ASCENDING), ("discord_id", ASCENDING)], unique=True)
+                await asyncio.to_thread(self.test_queue_signups.create_index, [("guild_id", ASCENDING), ("active", ASCENDING), ("created_at", ASCENDING)])
                 await asyncio.to_thread(self.trivia_scores.create_index, [("guild_id", ASCENDING), ("user_id", ASCENDING)], unique=True)
                 await asyncio.to_thread(self.trivia_answers.create_index, [("guild_id", ASCENDING), ("question_id", ASCENDING), ("user_id", ASCENDING)], unique=True)
                 await asyncio.to_thread(self.tester_applications.create_index, [("guild_id", ASCENDING), ("review_message_id", ASCENDING)], unique=True)
@@ -2551,11 +2543,14 @@ class PvPClubTiersCog(commands.Cog):
                 + (f" Continue in {channel.mention}." if channel else "")
             )
 
+        # Only an active PvPClubTiers queue session should block another
+        # waitlist entry. Unrelated or legacy tickets must not block signup.
         active_ticket = await self.db_call(
             self.tickets.find_one,
             {
                 "guild_id": guild.id,
                 "discord_id": member.id,
+                "session_type": "queue",
                 "status": {"$in": ["open", "claimed"]},
             },
         )
@@ -2608,7 +2603,8 @@ class PvPClubTiersCog(commands.Cog):
             "The queue is closed right now; you'll be pinged when a tester opens it."
         )
 
-    async def save_ign_and_show_queue_modes(self, interaction: discord.Interaction, username: str):
+    async def register_test_signup(self, interaction: discord.Interaction, username: str):
+        """Register once for all gamemodes and join any queues that are currently open."""
         if not await self.require_db(interaction):
             return
         await interaction.response.defer(ephemeral=True, thinking=True)
@@ -2618,29 +2614,113 @@ class PvPClubTiersCog(commands.Cog):
         try:
             username = clean_username(username)
             await self.get_or_create_player(interaction.guild.id, interaction.user, username)
+            now = datetime.now(timezone.utc)
+            await self.db_call(
+                self.test_queue_signups.update_one,
+                {"guild_id": interaction.guild.id, "discord_id": interaction.user.id},
+                {
+                    "$set": {
+                        "username": username,
+                        "active": True,
+                        "updated_at": now,
+                    },
+                    "$setOnInsert": {"created_at": now},
+                },
+                upsert=True,
+            )
         except ValueError as exc:
             await interaction.followup.send(str(exc), ephemeral=True)
             return
         except Exception:
-            log.exception("Could not save the Minecraft IGN for %s", interaction.user.id)
-            await interaction.followup.send("I couldn't save your IGN. Please try again or contact staff.", ephemeral=True)
+            log.exception("Could not save global test signup for %s", interaction.user.id)
+            await interaction.followup.send("I couldn't save your signup. Please try again or contact staff.", ephemeral=True)
             return
 
         open_modes = await self.open_test_queue_modes(interaction.guild)
-        if not open_modes:
-            await interaction.followup.send(
-                f"✅ Saved your Minecraft IGN as **{username}**. No test queues are open right now; "
-                "you can join when a tester opens one.",
-                ephemeral=True,
-            )
-            return
+        joined_modes = []
+        already_modes = []
+        blocked = []
+        async with self.test_queue_lock:
+            for gamemode in open_modes:
+                try:
+                    ok, result = await self.enqueue_test_member(
+                        interaction.guild, interaction.user, gamemode, username,
+                    )
+                except Exception:
+                    log.exception("Could not add global signup %s to %s", interaction.user.id, gamemode)
+                    ok, result = False, f"Could not add you to {gamemode}."
+                if ok:
+                    if "already on the" in result:
+                        already_modes.append(gamemode)
+                    else:
+                        joined_modes.append(gamemode)
+                else:
+                    blocked.append(result)
 
-        await interaction.followup.send(
-            f"✅ Saved your Minecraft IGN as **{username}**.\n"
-            "Choose one or more open gamemodes below. You only need to enter your IGN once.",
-            view=TestQueueJoinModesView(self, username, open_modes),
-            ephemeral=True,
-        )
+        if open_modes:
+            details = []
+            if joined_modes:
+                details.append("Added to: " + ", ".join(f"**{mode}**" for mode in joined_modes) + ".")
+            if already_modes:
+                details.append("Already waiting in: " + ", ".join(f"**{mode}**" for mode in already_modes) + ".")
+            if blocked:
+                details.append("Some open queues could not accept you: " + " ".join(blocked[:3]))
+            details.append("You're signed up for **all gamemodes** and will be added automatically when other queues open.")
+            response = f"✅ **You're signed up!** IGN: **{username}**\n" + "\n".join(details)
+        else:
+            response = (
+                f"✅ **You're signed up for all gamemodes!** IGN: **{username}**\n"
+                "No queues are open right now. You'll be added automatically when a tester opens one."
+            )
+
+        await self.refresh_test_queue_panel(interaction.guild)
+        await interaction.followup.send(response, ephemeral=True)
+
+    async def add_global_signups_to_queue(self, guild: discord.Guild, gamemode: str) -> list[int]:
+        """Fill an open gamemode queue from players who signed up globally."""
+        if gamemode not in GAMEMODES or self.db is None:
+            return []
+        added_ids = []
+        async with self.test_queue_lock:
+            config = await self.setting(guild.id)
+            mode_config = (config.get("test_queue_modes") or {}).get(mode_key(gamemode), {})
+            if not mode_config.get("open", False):
+                return []
+
+            signups = await self.db_call(
+                lambda: list(self.test_queue_signups.find({
+                    "guild_id": guild.id,
+                    "active": True,
+                }).sort("created_at", ASCENDING))
+            )
+            for signup in signups:
+                waiting_count = await self.db_call(
+                    self.test_queue_entries.count_documents,
+                    {"guild_id": guild.id, "gamemode": gamemode, "status": "waiting"},
+                )
+                if waiting_count >= QUEUE_CAPACITY:
+                    break
+
+                member_id = int(signup.get("discord_id", 0) or 0)
+                member = guild.get_member(member_id)
+                if member is None:
+                    try:
+                        member = await guild.fetch_member(member_id)
+                    except (discord.NotFound, discord.Forbidden, discord.HTTPException):
+                        continue
+                username = signup.get("username")
+                if not username:
+                    continue
+                try:
+                    ok, result = await self.enqueue_test_member(guild, member, gamemode, username)
+                except Exception:
+                    log.exception("Could not fill %s queue from global signup %s", gamemode, member_id)
+                    continue
+                if ok and result.startswith("✅ Joined the"):
+                    added_ids.append(member_id)
+                elif not ok and "waitlist is full" in result.casefold():
+                    break
+        return added_ids
 
     async def join_selected_test_queues(
         self,
@@ -2747,9 +2827,16 @@ class PvPClubTiersCog(commands.Cog):
                     "status": {"$in": ["starting", "testing"]},
                 },
             )
-        if result.modified_count:
+            signup_result = None
+            if gamemode is None:
+                signup_result = await self.db_call(
+                    self.test_queue_signups.update_one,
+                    {"guild_id": guild.id, "discord_id": interaction.user.id, "active": True},
+                    {"$set": {"active": False, "updated_at": datetime.now(timezone.utc)}},
+                )
+        if result.modified_count or (signup_result and signup_result.modified_count):
             await self.refresh_test_queue_panel(guild)
-            label = f"the **{gamemode}** waitlist" if gamemode else "all your waitlists"
+            label = f"the **{gamemode}** waitlist" if gamemode else "all your waitlists and cancelled your global signup"
             await interaction.followup.send(f"✅ You left {label}.", ephemeral=True)
         elif active and active.get("status") == "testing":
             channel = guild.get_channel(int(active.get("channel_id", 0) or 0))
@@ -2808,6 +2895,8 @@ class PvPClubTiersCog(commands.Cog):
             )
             return
 
+        if now_open:
+            await self.add_global_signups_to_queue(interaction.guild, gamemode)
         await self.refresh_test_queue_panel(interaction.guild)
         if now_open:
             waiting = await self.db_call(
@@ -3131,6 +3220,7 @@ class PvPClubTiersCog(commands.Cog):
             await self.refresh_test_queue_panel(guild)
             return
 
+        await self.add_global_signups_to_queue(guild, gamemode)
         await self.refresh_test_queue_panel(guild)
         await interaction.followup.send(
             f"✅ Private test session opened: {channel.mention}\n"
