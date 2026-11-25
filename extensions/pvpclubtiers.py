@@ -2869,6 +2869,8 @@ class PvPClubTiersCog(commands.Cog):
 
     async def recover_interrupted_test_starts(self, guild: discord.Guild):
         """Repair queue entries if the process stopped while a tester was opening a session."""
+        if self.db is None or not hasattr(self, "test_queue_entries"):
+            return
         now = datetime.now(timezone.utc)
         changed = False
         entries = await self.db_call(
@@ -2908,7 +2910,11 @@ class PvPClubTiersCog(commands.Cog):
                     except (discord.NotFound, discord.Forbidden, discord.HTTPException):
                         channel = None
                 if channel is not None:
-                    recovered_status = "completed" if ticket.get("status") == "completed" else "testing"
+                    recovered_status = (
+                        "completed" if ticket.get("status") == "completed"
+                        else "closed" if ticket.get("status") == "closed"
+                        else "testing"
+                    )
                     result = await self.db_call(
                         self.test_queue_entries.update_one,
                         {"queue_id": queue_id, "status": "starting"},
