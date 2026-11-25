@@ -569,19 +569,18 @@ class TestQueuePanelView(discord.ui.View):
 
         username = (player or {}).get("username")
         if username and re.fullmatch(r"[A-Za-z0-9_]{3,16}", str(username)):
-            await interaction.response.send_message(
-                open_modes = await self.cog.open_test_queue_modes(interaction.guild)
-                if not open_modes:
-                    await interaction.response.send_message(
-                        "No test queues are open right now. You can join as soon as a tester opens one.",
-                        ephemeral=True,
-                    )
-                    return
+            open_modes = await self.cog.open_test_queue_modes(interaction.guild)
+            if not open_modes:
                 await interaction.response.send_message(
-                    f"Your saved Minecraft IGN is **{username}**. Choose one or more open gamemodes:",
-                    view=TestQueueJoinModesView(self.cog, str(username), open_modes),
+                    "No test queues are open right now. You can join as soon as a tester opens one.",
                     ephemeral=True,
                 )
+                return
+            await interaction.response.send_message(
+                f"Your saved Minecraft IGN is **{username}**. Choose one or more open gamemodes:",
+                view=TestQueueJoinModesView(self.cog, str(username), open_modes),
+                ephemeral=True,
+            )
             return
 
         await interaction.response.send_modal(TestQueueJoinModal(self.cog))
