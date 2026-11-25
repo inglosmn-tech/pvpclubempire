@@ -1,4 +1,4 @@
-"""Meow-themed XP/voice leveling system backed by normalized PostgreSQL rows."""
+"""XP and voice leveling system backed by normalized PostgreSQL rows."""
 from __future__ import annotations
 
 import asyncio
@@ -16,13 +16,18 @@ log = logging.getLogger("pvpclub-empire.leveling")
 _bot = None
 
 ROLE_MILESTONES = [
-    (1, "🧶 Stray Kitten", 0xA0A0A0),
-    (5, "🐾 Curious Cat", 0xE67E22),
-    (10, "🐟 Fish Hunter", 0x42C7D7),
-    (20, "🌿 Catnip Addict", 0x77D6A2),
-    (35, "🦁 Alley Lion", 0xE5B83B),
-    (50, "👑 Purr Royalty", 0x8E44AD),
+    (1, "Level 1", 0xA0A0A0),
+    (5, "Level 5", 0xE67E22),
+    (10, "Level 10", 0x42C7D7),
+    (20, "Level 20", 0x77D6A2),
+    (35, "Level 35", 0xE5B83B),
+    (50, "Level 50", 0x8E44AD),
 ]
+LEGACY_LEVEL_ROLE_NAMES = {
+    "🧶 Stray Kitten", "🐾 Curious Cat", "🐟 Fish Hunter",
+    "🌿 Catnip Addict", "🦁 Alley Lion", "👑 Purr Royalty",
+}
+LEGACY_LEVEL_CHANNEL_NAMES = {"🐾-level-ups", "meow-levels"}
 
 
 def xp_required(level: int) -> int:
@@ -40,15 +45,15 @@ def level_from_total_xp(total_xp: int) -> tuple[int, int, int]:
     return level, remaining, xp_required(level)
 
 
-def cat_embed(title: str, description: str = "", color: int = 0xFF9CEE) -> discord.Embed:
+def level_embed(title: str, description: str = "", color: int = 0x5865F2) -> discord.Embed:
     e = discord.Embed(title=title, description=description, color=color)
-    e.set_footer(text="PVPClub Empire • Catnip & XP")
+    e.set_footer(text="PVPClub Empire • Leveling")
     return e
 
 
 def progress_bar(current: int, needed: int, width: int = 10) -> str:
     filled = min(width, int((current / max(1, needed)) * width))
-    return "🐾" * filled + "🧶" * (width - filled)
+    return "█" * filled + "░" * (width - filled)
 
 
 class LeaderboardView(discord.ui.View):
@@ -74,7 +79,7 @@ class LeaderboardView(discord.ui.View):
         for index, row in enumerate(rows, start=self.page * 10 + 1):
             marker = medals[index - 1] if index <= 3 else f"`#{index}`"
             lines.append(f"{marker} <@{row['user_id']}> — **Level {row['level']}** · {row['total_xp']:,} XP")
-        e = cat_embed("🏆 Empire Catnip Leaderboard", "\n".join(lines) or "No XP earned yet. Send messages or be active in voice!", 0xFF9CEE)
+        e = level_embed("🏆 Level Leaderboard", "\n".join(lines) or "No XP earned yet. Send messages or be active in voice!", 0xFF9CEE)
         e.set_footer(text=f"Page {self.page + 1} • PVPClub Empire")
         self._refresh_buttons()
         await interaction.response.edit_message(embed=e, view=self)
@@ -96,7 +101,7 @@ class LeaderboardView(discord.ui.View):
         await self._render(interaction)
 
 
-class MeowResetView(discord.ui.View):
+class LevelResetView(discord.ui.View):
     def __init__(self, cog: "LevelingCog", guild: discord.Guild, actor_id: int):
         super().__init__(timeout=60)
         self.cog = cog
@@ -112,7 +117,7 @@ class MeowResetView(discord.ui.View):
     @discord.ui.button(label="Reset server XP", style=discord.ButtonStyle.danger)
     async def reset_xp(self, interaction: discord.Interaction, button: discord.ui.Button):
         await self.cog.bot.store.delete_guild_levels(self.guild.id)
-        await interaction.response.edit_message(content="✅ Server XP has been reset. Your channels and cat roles were kept.", embed=None, view=None)
+        await interaction.response.edit_message(content="✅ Server XP has been reset. Your channels and level roles were kept.", embed=None, view=None)
 
     @discord.ui.button(label="Delete setup roles/channel", style=discord.ButtonStyle.secondary)
     async def delete_assets(self, interaction: discord.Interaction, button: discord.ui.Button):
@@ -151,7 +156,7 @@ class DeadchatRewardView(discord.ui.View):
         super().__init__(timeout=None)
         self.cog = cog
 
-    @discord.ui.button(label="Claim 5 XP", emoji="🐾", style=discord.ButtonStyle.success,
+    @discord.ui.button(label="Claim 5 XP", emoji="🎁", style=discord.ButtonStyle.success,
                        custom_id="deadchat:claim-xp")
     async def claim_xp(self, interaction: discord.Interaction, button: discord.ui.Button):
         if not interaction.guild or not isinstance(interaction.user, discord.Member):
@@ -171,7 +176,7 @@ class DeadchatRewardView(discord.ui.View):
         event["claimed"] = sorted(claimed)
         await self.cog.bot.store.save()
         await self.cog.award_xp(interaction.user, 5, voice=False)
-        await interaction.response.send_message("🐾 You claimed **5 XP**! Now keep the chat alive for 3× XP.", ephemeral=True)
+        await interaction.response.send_message("You claimed **5 XP**! Keep the chat active for 3× XP.", ephemeral=True)
 
 
 class LevelingCog(commands.Cog):
@@ -261,7 +266,7 @@ class LevelingCog(commands.Cog):
             channel_id = config.get("channel_id")
             channel = member.guild.get_channel(int(channel_id)) if channel_id else None
             if isinstance(channel, discord.TextChannel):
-                e = cat_embed("🎉 A kitten levelled up!", f"{member.mention} reached **Level {after['level']}**!\nYou have earned **{after['total_xp'] - before['total_xp']} XP**. Keep collecting catnip! 🐾", 0x57D69A)
+                e = level_embed("🎉 Level Up!", f"{member.mention} reached **Level {after['level']}**!\nYou have earned **{after['total_xp'] - before['total_xp']} XP**. Keep collecting catnip! 🐾", 0x57D69A)
                 e.set_thumbnail(url=member.display_avatar.url)
                 try:
                     await channel.send(embed=e, allowed_mentions=discord.AllowedMentions(users=[member]))
@@ -357,15 +362,15 @@ class LevelingCog(commands.Cog):
             "**Ignored:** channels named `afk` and `bot-commands`, plus the server AFK channel",
             "**Role hierarchy:** move my highest role above the six generated cat roles so I can assign them.",
         ])
-        await interaction.followup.send(embed=cat_embed("🐾 Meow leveling setup complete", note, 0x57D69A), ephemeral=True)
+        await interaction.followup.send(embed=level_embed("🐾 Meow leveling setup complete", note, 0x57D69A), ephemeral=True)
 
     @app_commands.command(name="meow-reset", description="Reset server leveling data or remove generated setup assets.")
     @app_commands.guild_only()
     @app_commands.checks.has_permissions(manage_guild=True)
     async def meow_reset(self, interaction: discord.Interaction):
         await interaction.response.send_message(
-            embed=cat_embed("⚠️ Reset meow leveling?", "Choose an action below. Resetting XP cannot be undone."),
-            view=MeowResetView(self, interaction.guild, interaction.user.id), ephemeral=True,
+            embed=level_embed("⚠️ Reset meow leveling?", "Choose an action below. Resetting XP cannot be undone."),
+            view=LevelResetView(self, interaction.guild, interaction.user.id), ephemeral=True,
         )
 
     @app_commands.command(name="rank", description="View your or another member's meow level and XP.")
@@ -392,7 +397,7 @@ class LevelingCog(commands.Cog):
             current_role = role.mention
         voice_seconds = data["voice_seconds"]
         voice_time = f"{voice_seconds // 3600}h {(voice_seconds % 3600) // 60}m"
-        e = cat_embed(f"🐱 {target.display_name} • Cat Rank", color=0xFF9CEE)
+        e = level_embed(f"🐱 {target.display_name} • Cat Rank", color=0xFF9CEE)
         e.set_thumbnail(url=target.display_avatar.url)
         e.add_field(name="Level", value=f"**{level}**", inline=True)
         e.add_field(name="Server rank", value=f"**#{rank_num}**" if rank_num else "Unranked", inline=True)
@@ -411,7 +416,7 @@ class LevelingCog(commands.Cog):
         for index, row in enumerate(rows, 1):
             marker = medals[index - 1] if index <= 3 else f"`#{index}`"
             lines.append(f"{marker} <@{row['user_id']}> — **Level {row['level']}** · {row['total_xp']:,} XP")
-        e = cat_embed("🏆 Empire Catnip Leaderboard", "\n".join(lines) or "No XP yet. Be the first kitten! 🐾")
+        e = level_embed("🏆 Empire Catnip Leaderboard", "\n".join(lines) or "No XP yet. Be the first kitten! 🐾")
         await interaction.response.send_message(embed=e, view=LeaderboardView(self, interaction.guild_id))
 
 
@@ -521,7 +526,7 @@ class LevelingCog(commands.Cog):
             await self.bot.store.save()
             active_until = now_ts + 30 * 60
             event_id = f"{now_dt.date().isoformat()}-{slot}-{int(now_ts)}"
-            embed = cat_embed(
+            embed = level_embed(
                 "💀 DEAD CHAT DETECTED",
                 f"{role.mention} the chat has been silent for over an hour!\n\n"
                 "**3× XP is now active for 30 minutes.** Start talking, keep the chat alive, "
@@ -647,7 +652,7 @@ class LevelingCog(commands.Cog):
                 invasion["next_at"] = self._next_cat_invasion_at()
                 await self.bot.store.save()
                 continue
-            embed = cat_embed(
+            embed = level_embed(
                 "🐈 CAT INVASION!",
                 "A wild cat has appeared in the chat!\n\n"
                 "Type MEOW within 60 seconds.\n"
@@ -707,7 +712,7 @@ class LevelingCog(commands.Cog):
         await self.bot.wait_until_ready()
 
 
-level_admin = app_commands.Group(name="level-admin", description="Admin controls for the meow leveling system")
+level_admin = app_commands.Group(name="level-admin", description="Admin controls for server leveling")
 
 
 def _admin_check(interaction: discord.Interaction) -> bool:
