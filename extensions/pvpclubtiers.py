@@ -313,6 +313,82 @@ class TesterApplicationReviewView(discord.ui.View):
         await self.cog.review_tester_application(interaction, accepted=False)
 
 
+class TierInfoPanelView(discord.ui.View):
+    def __init__(self, cog):
+        super().__init__(timeout=None)
+        self.cog = cog
+
+        website_url = self.cog.website_url()
+        if website_url:
+            self.add_item(discord.ui.Button(
+                label="Tier list website",
+                style=discord.ButtonStyle.link,
+                emoji="🌐",
+                url=website_url,
+            ))
+
+    @discord.ui.button(
+        label="Apply for Tier Tester",
+        style=discord.ButtonStyle.primary,
+        emoji="🧪",
+        custom_id="pvpclubtiers:tier-info:apply",
+        row=0,
+    )
+    async def apply(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if self.cog.db is None:
+            await self.cog.require_db(interaction)
+            return
+        if interaction.guild is None:
+            await interaction.response.send_message("Applications are available inside the server.", ephemeral=True)
+            return
+        await interaction.response.send_message(
+            "Choose the gamemode you want to become a tester for. The application form will open next.",
+            view=TesterApplicationModeSelectView(self.cog),
+            ephemeral=True,
+        )
+
+    @discord.ui.button(
+        label="My tiers",
+        style=discord.ButtonStyle.secondary,
+        emoji="🏅",
+        custom_id="pvpclubtiers:tier-info:my-tiers",
+        row=0,
+    )
+    async def my_tiers(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await self.cog.show_my_tiers(interaction)
+
+
+class LeaderboardPanelView(discord.ui.View):
+    def __init__(self, cog):
+        super().__init__(timeout=None)
+        self.cog = cog
+        website_url = self.cog.website_url()
+        if website_url:
+            self.add_item(discord.ui.Button(
+                label="Tier list website",
+                style=discord.ButtonStyle.link,
+                emoji="🌐",
+                url=website_url,
+            ))
+
+    @discord.ui.button(
+        label="Refresh leaderboard",
+        style=discord.ButtonStyle.secondary,
+        emoji="🔄",
+        custom_id="pvpclubtiers:leaderboard:refresh",
+    )
+    async def refresh(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if not await self.cog.require_db(interaction):
+            return
+        await interaction.response.defer(ephemeral=True, thinking=True)
+        try:
+            await self.cog.ensure_leaderboard_panel(interaction.guild)
+            await interaction.followup.send("✅ The leaderboard has been refreshed.", ephemeral=True)
+        except Exception:
+            log.exception("Manual leaderboard refresh failed in guild %s", interaction.guild.id)
+            await interaction.followup.send("I couldn't refresh the leaderboard. Check the Render logs.", ephemeral=True)
+
+
 class OwnerSetTierSelect(discord.ui.Select):
     def __init__(self, cog, gamemode: str, username: str, player_id: int, current_tier: str | None):
         self.cog = cog
