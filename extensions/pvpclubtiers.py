@@ -89,7 +89,7 @@ def mode_key(value: str) -> str:
     return re.sub(r"[^a-z0-9]+", "_", value.casefold()).strip("_")
 
 def plain_discord_name(value: str) -> str:
-    value = re.sub(r"^『[^』]+』\\s*", "", value.strip())
+    value = re.sub(r"^『[^』]+』\s*", "", value.strip())
     value = re.sub(r"^[^│|]+[│|]\\s*", "", value)
     value = re.sub(r"^[^a-zA-Z0-9]+", "", value)
     return value.strip().casefold()
@@ -976,6 +976,185 @@ class PvPClubTiersCog(commands.Cog):
         return await guild.create_text_channel(
             name, category=category, overwrites=overwrite, reason="PvPClubTiers setup"
         )
+
+    def website_url(self) -> str | None:
+        value = (os.getenv(TIER_WEBSITE_ENV) or os.getenv("RENDER_EXTERNAL_URL") or "").strip()
+        if not value:
+            return None
+        if not value.startswith(("https://", "http://")):
+            value = "https://" + value
+        return value.rstrip("/") + "/"
+
+    def build_tier_info_embed(self) -> discord.Embed:
+        mode_lines = [
+            f"{MODE_EMOJIS.get(mode, '🎮')} **{mode}** · first to {MODE_BEST_OF.get(mode, 4)}"
+            for mode in GAMEMODES
+        ]
+        rules = (
+            "• Be on time. Message your tester if you cannot make it.\n"
+            "• No cheats, macros or banned mods. Cheating can result in a testing ban.\n"
+            "• Do not argue about results in public. Ask a Tier Manager through a support ticket.\n"
+            "• Alternate accounts and dodging tests are not allowed.\n"
+            "• Respect your tester. They volunteer their time."
+        )
+        embed = discord.Embed(
+            title="📜 PvPClubTiers • Tier information",
+            description=(
+                "Everything you need to know before requesting a competitive Minecraft PvP tier test. "
+                "Choose a gamemode, join its waitlist and meet your assigned tester in a private session."
+            ),
+            colour=0x55DDEB,
+        )
+        embed.add_field(name="Gamemodes & test format", value="\n".join(mode_lines), inline=False)
+        embed.add_field(name="Testing rules", value=rules, inline=False)
+        embed.add_field(
+            name="Become a tier tester",
+            value=(
+                "Good at PvP and want to help test other players? Apply below. "
+                "Choose a gamemode and complete the application form. Your application is sent "
+                "to the configured tester application review channel."
+            ),
+            inline=False,
+        )
+        embed.set_footer(text="PvPClubTiers • EU • mcpvp.club")
+        return embed
+
+    async def ensure_tier_info_panel(self, guild: discord.Guild):
+        config = await self.setting(guild.id)
+        channel_id = config.get("tier_info_channel_id")
+        channel = guild.get_channel(int(channel_id)) if channel_id else None
+        if not isinstance(channel, discord.TextChannel):
+            category_id = config.get("public_category_id")
+            category = guild.get_channel(int(category_id)) if category_id else None
+            if not isinstance(category, discord.CategoryChannel):
+                category = await self.find_category(guild, "PVPCLUBTIERS")
+            channel = await self.find_channel(guild, "tier-info", category, send_disabled=True)
+        panel = None
+        message_id = config.get("tier_info_panel_message_id")
+        if message_id:
+            try:
+                panel = await channel.fetch_message(int(message_id))
+            except (discord.NotFound, discord.Forbidden, discord.HTTPException, ValueError):
+                panel = None
+        if panel:
+            await panel.edit(embed=self.build_tier_info_embed(), view=TierInfoPanelView(self))
+        else:
+            panel = await channel.send(
+                embed=self.build_tier_info_embed(),
+                view=TierInfoPanelView(self),
+                allowed_mentions=discord.AllowedMentions.none(),
+            )
+        await self.db_call(self.settings.update_one, {"guild_id": guild.id}, {
+            "$set": {"tier_info_channel_id": channel.id, "tier_info_panel_message_id": panel.id}
+        }, upsert=True)
+        return channel
+
+    async def build_leaderboard_embed(self, guild: discord.Guild) -> discord.Embed:
+        overall = await self.make_leaderboard(guild.id, None, 15)
+        lines = ["**🏆 Overall leaderboard**"]
+        if overall:
+            medals = {1: "🥇", 2: "🥈", 3: "🥉"}
+            for index, row in enumerate(overall, 1):
+                mark = medals.get(index, f"{index}.")
+                user_id = str(row.get("discordId") or "")
+                mention = f"<@{user_id}>" if user_id.isdigit() else ""
+                lines.append(
+                    f"{mark} **{discord.utils.escape_markdown(str(row.get('username', 'Unknown')))}**"
+                    + (f" {mention}" if mention else "")
+                    + f" · **{int(row.get('totalPoints', 0))}** pts"
+                )
+        else:
+            lines.append("No players have been tiered yet.")
+
+        for mode in GAMEMODES:
+            rows = await self.make_leaderboard(guild.id, mode, 3)
+            if not rows:
+                continue
+            mode_lines = []
+            for row in rows:
+                mode_lines.append(
+                    f"**{row['display_tier']}** — "
+                    f"{discord.utils.escape_markdown(str(row.get('username', 'Unknown')))}"
+                )
+            lines.append(
+                f"\n**{MODE_EMOJIS.get(mode, '🎮')} {mode}**\n" + "\n".join(mode_lines)
+            )
+
+        website = self.website_url()
+        if website:
+            lines.append(f"\n🌐 [Open the full tier list website]({website})")
+        embed = discord.Embed(
+            title="📊 Tier Leaderboard",
+            description="\n".join(lines),
+            colour=0xF1C40F,
+            timestamp=discord.utils.utcnow(),
+        )
+        embed.set_footer(text="PvPClubTiers • Overall points and gamemode top 3 • Updates automatically")
+        return embed
+
+    async def ensure_leaderboard_panel(self, guild: discord.Guild):
+        config = await self.setting(guild.id)
+        channel_id = config.get("leaderboard_channel_id")
+        channel = guild.get_channel(int(channel_id)) if channel_id else None
+        if not isinstance(channel, discord.TextChannel):
+            category_id = config.get("public_category_id")
+            category = guild.get_channel(int(category_id)) if category_id else None
+            if not isinstance(category, discord.CategoryChannel):
+                category = await self.find_category(guild, "PVPCLUBTIERS")
+            channel = await self.find_channel(guild, "tier-leaderboard", category, send_disabled=True)
+
+        panel = None
+        message_id = config.get("leaderboard_panel_message_id")
+        if message_id:
+            try:
+                panel = await channel.fetch_message(int(message_id))
+            except (discord.NotFound, discord.Forbidden, discord.HTTPException, ValueError):
+                panel = None
+        embed = await self.build_leaderboard_embed(guild)
+        view = LeaderboardPanelView(self)
+        if panel:
+            await panel.edit(embed=embed, view=view, allowed_mentions=discord.AllowedMentions.none())
+        else:
+            panel = await channel.send(
+                embed=embed,
+                view=view,
+                allowed_mentions=discord.AllowedMentions.none(),
+            )
+        await self.db_call(self.settings.update_one, {"guild_id": guild.id}, {
+            "$set": {"leaderboard_channel_id": channel.id, "leaderboard_panel_message_id": panel.id}
+        }, upsert=True)
+        return channel
+
+    async def show_my_tiers(self, interaction: discord.Interaction):
+        if not await self.require_db(interaction):
+            return
+        await interaction.response.defer(ephemeral=True, thinking=True)
+        player = await self.get_player(interaction.guild.id, interaction.user.id)
+        if not player:
+            await interaction.followup.send(
+                "You do not have a PvPClubTiers profile yet. Save your Minecraft IGN in the request-test channel or use /ign.",
+                ephemeral=True,
+            )
+            return
+        best, best_mode = best_tier(player.get("tiers", {}))
+        lines = [
+            f"{MODE_EMOJIS.get(mode, '🎮')} **{mode}:** {(player.get('tiers') or {}).get(mode, 'Unranked')}"
+            for mode in GAMEMODES
+        ]
+        embed = discord.Embed(
+            title=f"🏅 {player.get('username', interaction.user.display_name)} • My tiers",
+            description="\n".join(lines),
+            colour=COLOURS.get(best, 0x55DDEB),
+        )
+        embed.add_field(
+            name="Best tier",
+            value=f"**{best or 'Unranked'}**" + (f" in **{best_mode}**" if best_mode else ""),
+            inline=False,
+        )
+        embed.add_field(name="Tier points", value=str(total_tier_points(player.get("tiers", {}))), inline=True)
+        embed.add_field(name="Duel ELO", value=str(player.get("elo", 1000)), inline=True)
+        embed.set_thumbnail(url=interaction.user.display_avatar.url)
+        await interaction.followup.send(embed=embed, ephemeral=True)
 
     async def build_test_queue_embed(self, guild: discord.Guild, gamemode: str) -> discord.Embed:
         config = await self.setting(guild.id)
