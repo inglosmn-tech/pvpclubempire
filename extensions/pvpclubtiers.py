@@ -341,30 +341,10 @@ class OwnerSetTierView(discord.ui.View):
         self.add_item(OwnerSetTierSelect(cog, gamemode, username, player_id, current_tier))
 
 
-class TestQueueJoinSelect(discord.ui.Select):
-    def __init__(self, cog):
-        self.cog = cog
-        super().__init__(
-            placeholder="Choose the gamemode you want to join…",
-            min_values=1,
-            max_values=1,
-            options=[discord.SelectOption(label=mode, value=mode) for mode in GAMEMODES],
-            custom_id="inglotiers:test-queue:join-mode",
-        )
-
-    async def callback(self, interaction: discord.Interaction):
-        await interaction.response.send_modal(TestQueueJoinModal(self.cog, self.values[0]))
-
-
-class TestQueueJoinView(discord.ui.View):
-    def __init__(self, cog):
-        super().__init__(timeout=180)
-        self.add_item(TestQueueJoinSelect(cog))
-
-
 class TestQueueJoinModal(discord.ui.Modal):
-    def __init__(self, cog, gamemode: str):
-        super().__init__(title=f"Join {gamemode} test queue")
+    def __init__(self, cog, gamemode: str | None = None):
+        title = f"Join {gamemode} queue" if gamemode else "Set Minecraft IGN"
+        super().__init__(title=title)
         self.cog = cog
         self.gamemode = gamemode
         self.username = discord.ui.TextInput(
@@ -377,7 +357,115 @@ class TestQueueJoinModal(discord.ui.Modal):
         self.add_item(self.username)
 
     async def on_submit(self, interaction: discord.Interaction):
-        await self.cog.join_test_queue(interaction, self.gamemode, str(self.username))
+        if self.gamemode:
+            await self.cog.join_test_queue(interaction, self.gamemode, str(self.username))
+        else:
+            await self.cog.save_ign_and_show_queue_modes(interaction, str(self.username))
+
+
+class TestQueueJoinModesSelect(discord.ui.Select):
+    def __init__(self, cog, username: str):
+        self.cog = cog
+        self.username = username
+        super().__init__(
+            placeholder="Choose one or more gamemodes…",
+            min_values=1,
+            max_values=len(GAMEMODES),
+            options=[
+                discord.SelectOption(label=mode, value=mode, emoji=MODE_EMOJIS.get(mode))
+                for mode in GAMEMODES
+            ],
+            custom_id="inglotiers:test-queue:join-multiple-modes",
+        )
+
+    async def callback(self, interaction: discord.Interaction):
+        await self.cog.join_selected_test_queues(interaction, self.values, self.username)
+
+
+class TestQueueJoinModesView(discord.ui.View):
+    def __init__(self, cog, username: str):
+        super().__init__(timeout=180)
+        self.add_item(TestQueueJoinModesSelect(cog, username))
+
+
+class GamemodeTestQueueView(discord.ui.View):
+    """Persistent Join/Leave buttons attached to one gamemode's queue card."""
+
+    def __init__(self, cog, gamemode: str):
+        super().__init__(timeout=None)
+        self.cog = cog
+        self.gamemode = gamemode
+        key = mode_key(gamemode)
+
+        join = discord.ui.Button(
+            label="Join queue",
+            style=discord.ButtonStyle.success,
+            emoji="✅",
+            custom_id=f"inglotiers:test-queue:join:{key}",
+            row=0,
+        )
+        leave = discord.ui.Button(
+            label="Leave queue",
+            style=discord.ButtonStyle.secondary,
+            emoji="🚪",
+            custom_id=f"inglotiers:test-queue:leave:{key}",
+            row=0,
+        )
+
+        async def join_callback(interaction: discord.Interaction):
+            await self.cog.handle_queue_join_button(interaction, self.gamemode)
+
+        async def leave_callback(interaction: discord.Interaction):
+            await self.cog.leave_test_queue(interaction, self.gamemode)
+
+        join.callback = join_callback
+        leave.callback = leave_callback
+        self.add_item(join)
+        self.add_item(leave)
+
+
+class TestQueuePanelView(discord.ui.View):
+    """Persistent request panel: save one IGN, join multiple waitlists, manage entries."""
+
+    def __init__(self, cog):
+        super().__init__(timeout=None)
+        self.cog = cog
+
+    @discord.ui.button(
+        label="Pick gamemodes / Set IGN",
+        style=discord.ButtonStyle.success,
+        emoji="✅",
+        custom_id="inglotiers:test-queue:join",
+    )
+    async def join_queue(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await interaction.response.send_modal(TestQueueJoinModal(self.cog))
+
+    @discord.ui.button(
+        label="My waitlists",
+        style=discord.ButtonStyle.secondary,
+        emoji="📋",
+        custom_id="inglotiers:test-queue:my-waitlists",
+    )
+    async def my_waitlists(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await self.cog.show_my_test_waitlists(interaction)
+
+    @discord.ui.button(
+        label="Leave all waitlists",
+        style=discord.ButtonStyle.danger,
+        emoji="🚪",
+        custom_id="inglotiers:test-queue:leave-all",
+    )
+    async def leave_all(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await self.cog.leave_all_test_waitlists(interaction)
+
+    @discord.ui.button(
+        label="Tester Controls",
+        style=discord.ButtonStyle.primary,
+        emoji="🛠️",
+        custom_id="inglotiers:test-queue:tester",
+    )
+    async def tester_controls(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await self.cog.show_tester_queue_controls(interaction)
 
 
 class TesterQueueModeSelect(discord.ui.Select):
