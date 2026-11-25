@@ -1236,31 +1236,70 @@ class PvPClubTiersCog(commands.Cog):
 
     async def ensure_test_queue_panel(self, guild: discord.Guild):
         config = await self.setting(guild.id)
-        channel_id = config.get("test_queue_channel_id")
-        channel = guild.get_channel(int(channel_id)) if channel_id else None
         public_category = guild.get_channel(int(config.get("public_category_id", 0) or 0))
         if not isinstance(public_category, discord.CategoryChannel):
-            public_category = discord.utils.get(guild.categories, name="⚔️│PVPCLUBTIERS")
-        if not isinstance(public_category, discord.CategoryChannel):
-            public_category = discord.utils.get(guild.categories, name="PVPCLUBTIERS")
-        if not isinstance(channel, discord.TextChannel):
-            channel = next(
-                (item for item in guild.text_channels
-                 if re.sub(r"^『[^』]+』\s*", "", item.name).casefold() in {"queues", "test-queues"}),
+            public_category = next(
+                (item for item in guild.categories if plain_discord_name(item.name) == "pvpclubtiers"),
                 None,
             )
+
+        channel_id = config.get("test_queue_channel_id")
+        channel = guild.get_channel(int(channel_id)) if channel_id else None
+        forum_type = getattr(discord, "ForumChannel", None)
+        if forum_type is not None and isinstance(channel, forum_type):
+            if (
+                isinstance(public_category, discord.CategoryChannel)
+                and channel.category_id == public_category.id
+                and plain_discord_name(channel.name) in {"queues", "test-queues"}
+            ):
+                await channel.delete(reason="Replace thread-only PvPClub queues with a text channel")
+            channel = None
+
+        if not isinstance(channel, discord.TextChannel):
+            legacy_forum = next(
+                (
+                    item for item in guild.channels
+                    if forum_type is not None
+                    and isinstance(item, forum_type)
+                    and isinstance(public_category, discord.CategoryChannel)
+                    and item.category_id == public_category.id
+                    and plain_discord_name(item.name) in {"queues", "test-queues"}
+                ),
+                None,
+            )
+            if legacy_forum is not None:
+                await legacy_forum.delete(
+                    reason="Replace thread-only PvPClub queues with a text channel"
+                )
+            channel = next(
+                (
+                    item for item in guild.text_channels
+                    if public_category is not None
+                    and item.category_id == public_category.id
+                    and plain_discord_name(item.name) in {"queues", "test-queues"}
+                ),
+                None,
+            )
+
         queue_overwrites = {
             guild.default_role: discord.PermissionOverwrite(
-                view_channel=True, send_messages=False, read_message_history=True,
-                create_public_threads=False, create_private_threads=False,
+                view_channel=True,
+                send_messages=False,
+                read_message_history=True,
+                create_public_threads=False,
+                create_private_threads=False,
                 send_messages_in_threads=False,
             ),
         }
         if guild.me:
             queue_overwrites[guild.me] = discord.PermissionOverwrite(
-                view_channel=True, send_messages=True, embed_links=True,
-                read_message_history=True, manage_messages=True,
+                view_channel=True,
+                send_messages=True,
+                embed_links=True,
+                read_message_history=True,
+                manage_messages=True,
             )
+
         if channel is None:
             if not isinstance(public_category, discord.CategoryChannel):
                 return None
@@ -1272,6 +1311,7 @@ class PvPClubTiersCog(commands.Cog):
             )
         else:
             await channel.edit(
+                name="『🎮』 queues",
                 category=public_category if isinstance(public_category, discord.CategoryChannel) else channel.category,
                 overwrites=queue_overwrites,
                 reason="PvPClubTiers public queue card permissions",
@@ -1310,29 +1350,65 @@ class PvPClubTiersCog(commands.Cog):
         await self.db_call(
             self.settings.update_one,
             {"guild_id": guild.id},
-            {"$set": {
-                "test_queue_channel_id": channel.id,
-                "test_queue_panel_message_ids": message_ids,
-            }, "$unset": {"test_queue_panel_message_id": ""}},
+            {
+                "$set": {
+                    "test_queue_channel_id": channel.id,
+                    "test_queue_panel_message_ids": message_ids,
+                },
+                "$unset": {"test_queue_panel_message_id": ""},
+            },
             upsert=True,
         )
         return channel
 
     async def ensure_test_request_panel(self, guild: discord.Guild):
         config = await self.setting(guild.id)
-        channel_id = config.get("test_request_channel_id")
+        public_category = guild.get_channel(int(config.get("public_category_id", 0) or 0))
+        if not isinstance(public_category, discord.CategoryChannel):
+            public_category = next(
+                (item for item in guild.categories if plain_discord_name(item.name) == "pvpclubtiers"),
+                None,
+            )
+
+        channel_id = config.get("test_request_channel_id") or config.get("request_channel_id")
         channel = guild.get_channel(int(channel_id)) if channel_id else None
+        forum_type = getattr(discord, "ForumChannel", None)
+        if forum_type is not None and isinstance(channel, forum_type):
+            if (
+                isinstance(public_category, discord.CategoryChannel)
+                and channel.category_id == public_category.id
+                and plain_discord_name(channel.name) == "request-test"
+            ):
+                await channel.delete(reason="Replace thread-only tier requests with a text panel")
+            channel = None
+
         if not isinstance(channel, discord.TextChannel):
-            public_category = guild.get_channel(int(config.get("public_category_id", 0) or 0))
-            if not isinstance(public_category, discord.CategoryChannel):
-                public_category = discord.utils.get(guild.categories, name="PVPCLUBTIERS")
-            if isinstance(public_category, discord.CategoryChannel):
-                channel = discord.utils.get(public_category.text_channels, name="『📥』 request-test")
-                channel = channel or discord.utils.get(public_category.text_channels, name="request-test")
+            legacy_forum = next(
+                (
+                    item for item in guild.channels
+                    if forum_type is not None
+                    and isinstance(item, forum_type)
+                    and isinstance(public_category, discord.CategoryChannel)
+                    and item.category_id == public_category.id
+                    and plain_discord_name(item.name) == "request-test"
+                ),
+                None,
+            )
+            if legacy_forum is not None:
+                await legacy_forum.delete(
+                    reason="Replace thread-only tier requests with a text panel"
+                )
+            channel = next(
+                (
+                    item for item in guild.text_channels
+                    if public_category is not None
+                    and item.category_id == public_category.id
+                    and plain_discord_name(item.name) == "request-test"
+                ),
+                None,
+            )
+
         if channel is None:
-            public_category = guild.get_channel(int(config.get("public_category_id", 0) or 0))
-            if not isinstance(public_category, discord.CategoryChannel):
-                public_category = discord.utils.get(guild.categories, name="PVPCLUBTIERS")
             if not isinstance(public_category, discord.CategoryChannel):
                 return None
             channel = await guild.create_text_channel(
@@ -1340,13 +1416,19 @@ class PvPClubTiersCog(commands.Cog):
                 category=public_category,
                 overwrites={
                     guild.default_role: discord.PermissionOverwrite(
-                        view_channel=True, send_messages=False, read_message_history=True,
-                        create_public_threads=False, create_private_threads=False,
+                        view_channel=True,
+                        send_messages=False,
+                        read_message_history=True,
+                        create_public_threads=False,
+                        create_private_threads=False,
                         send_messages_in_threads=False,
                     ),
                     guild.me: discord.PermissionOverwrite(
-                        view_channel=True, send_messages=True, embed_links=True,
-                        read_message_history=True, manage_messages=True,
+                        view_channel=True,
+                        send_messages=True,
+                        embed_links=True,
+                        read_message_history=True,
+                        manage_messages=True,
                     ),
                 },
                 reason="PvPClubTiers single-IGN test request panel",
@@ -1354,17 +1436,25 @@ class PvPClubTiersCog(commands.Cog):
         else:
             overwrites = {
                 guild.default_role: discord.PermissionOverwrite(
-                    view_channel=True, send_messages=False, read_message_history=True,
-                    create_public_threads=False, create_private_threads=False,
+                    view_channel=True,
+                    send_messages=False,
+                    read_message_history=True,
+                    create_public_threads=False,
+                    create_private_threads=False,
                     send_messages_in_threads=False,
                 ),
             }
             if guild.me:
                 overwrites[guild.me] = discord.PermissionOverwrite(
-                    view_channel=True, send_messages=True, embed_links=True,
-                    read_message_history=True, manage_messages=True,
+                    view_channel=True,
+                    send_messages=True,
+                    embed_links=True,
+                    read_message_history=True,
+                    manage_messages=True,
                 )
             await channel.edit(
+                name="『📥』 request-test",
+                category=public_category if isinstance(public_category, discord.CategoryChannel) else channel.category,
                 overwrites=overwrites,
                 reason="PvPClubTiers test request panel permissions",
             )
@@ -1389,7 +1479,11 @@ class PvPClubTiersCog(commands.Cog):
         )
         embed.add_field(
             name="How it works",
-            value="1. Set your IGN.\n2. Select one or more gamemodes.\n3. Check **My waitlists** or leave all queues whenever you need.",
+            value=(
+                "1. Set your IGN.\n"
+                "2. Select one or more gamemodes.\n"
+                "3. Check **My waitlists** or leave all queues whenever you need."
+            ),
             inline=False,
         )
         embed.set_footer(text="One Minecraft IGN • Multiple gamemode waitlists")
@@ -1404,10 +1498,13 @@ class PvPClubTiersCog(commands.Cog):
         await self.db_call(
             self.settings.update_one,
             {"guild_id": guild.id},
-            {"$set": {
-                "test_request_channel_id": channel.id,
-                "test_request_panel_message_id": panel.id,
-            }},
+            {
+                "$set": {
+                    "test_request_channel_id": channel.id,
+                    "test_request_panel_message_id": panel.id,
+                },
+                "$unset": {"request_channel_id": "", "request_panel_message_id": ""},
+            },
             upsert=True,
         )
         return channel
