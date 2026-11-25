@@ -1,6 +1,6 @@
 # PVPClub Empire
 
-Existing `discord.py` bot updated with MCTiers lookups, persistent meow statistics, event and Tierwatch tools, community utilities, AutoMod, moderation and a meow-themed leveling system.
+Existing `discord.py` bot updated with MCTiers lookups, persistent meow statistics, event and Tierwatch tools, community utilities, AutoMod, moderation and a XP and voice leveling system.
 
 ## Render deployment
 
@@ -67,7 +67,7 @@ Give the bot the permissions needed for the features you enable: Manage Roles, M
 
 - `?meowrolessetup` — creates Meow milestone roles and `meowking` for the current #1 lifetime meower.
 - `?suggestsetup #suggestions` — configure the suggestions channel (Manage Messages or Manage Server); members submit via `/suggest`, moderators review.
-- `?setwelcome #welcome` — configure cat-themed welcome messages.
+- `?setwelcome #welcome` — configure normal welcome messages.
 - `?autorole @role` — assign a role to new members.
 - `?birthdaysetup #birthdays` — configure birthday announcements; members set their date with `/birthday`.
 - `?logssetup #server-logs` — configure general server logs.
@@ -83,7 +83,7 @@ Give the bot the permissions needed for the features you enable: Manage Roles, M
 - `?triviastop` — pause scheduled trivia.
 - `?spamchannel` — mark the current channel as a spam zone where normal bot AutoMod is bypassed but the anti-macro human check stays active. Use `?spamchannel off` to disable it or `?spamchannel status` to check.
 - `?storage` — inspect database storage usage.
-- `/meow-setup` — one-click XP/voice leveling setup.
+- `?levelsetup` or `/level-setup` — set up XP/voice leveling, a `#level-ups` channel and neutral milestone roles. Existing bot-created cat-themed level roles and channels are renamed when possible.
 - `?catinvasion` — enable random cat events in the current channel; first exact `MEOW` within 60 seconds wins 25 XP. Events run every 3–6 hours between 10:00 and 22:00 (Amsterdam time).
 - `?catinvasionstop` — disable Cat Invasion.
 
@@ -98,7 +98,7 @@ Give the bot the permissions needed for the features you enable: Manage Roles, M
 - `/tierwatch`, `/tierunwatch`, `/tierwatchlist` — manage official profile change tracking.
 - `/meowstreak`, `/meowstats`, `/meowboard` — meow statistics and leaderboard.
 - `/suggest`, `/birthday`, `/birthdayremove` — community utilities.
-- `/rank`, `/leaderboard`, `/level-admin`, `/meow-reset` — meow leveling.
+- `/rank`, `/leaderboard`, `/level-admin`, `/level-reset` — server leveling and XP.
 - `/automod toggle`, `/automod module`, `/automod addterm`, `/automod removeterm`, `/automod immune-role`, `/automod immune-channel`, `/automod invite-code`, `/automod setlog` — AutoMod configuration.
 
 ## Prefix and slash command changes
