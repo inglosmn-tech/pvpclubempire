@@ -1249,12 +1249,12 @@ class PvPClubTiersCog(commands.Cog):
         # online status from Member.status: the bot does not request Discord's
         # privileged Presence Intent, so cached members can all appear offline.
         if configured_open:
-            status_line = "🟢 **Open.** A tester has opened this queue and is accepting players."
+            status_line = "🟢 **Open.** A tester is accepting players."
             colour = 0x57D69A
         else:
-            status_line = "🔴 **Closed.** You cannot join while this queue is closed."
+            status_line = "🔴 **Closed.** Waiting for a tester to open it."
             if count:
-                status_line += f" {count} player(s) already waiting will be notified when it reopens."
+                status_line += f" {count} waiting; notified when reopened."
             colour = 0x747B8C
 
         embed = discord.Embed(
@@ -1265,7 +1265,7 @@ class PvPClubTiersCog(commands.Cog):
             ),
             colour=colour,
         )
-        embed.set_footer(text="Join only while open • Leave any time before your test starts")
+        embed.set_footer(text="Join when open • Leave before testing")
         return embed
 
     async def ensure_test_queue_panel(self, guild: discord.Guild):
