@@ -848,7 +848,11 @@ class PvPClubTiersCog(commands.Cog):
         else:
             log.warning("MONGO_URI is not set; PvPClubTiers will be disabled until it is configured.")
         self.bot.add_view(TestQueuePanelView(self))
+        for mode in GAMEMODES:
+            self.bot.add_view(GamemodeTestQueueView(self, mode))
         self.bot.add_view(QueueTestSessionView(self))
+        self.bot.add_view(TierInfoPanelView(self))
+        self.bot.add_view(LeaderboardPanelView(self))
         self.bot.add_view(TesterApplicationPanelView(self))
         self.bot.add_view(TesterApplicationReviewView(self))
         self.bot.add_view(DuelInviteView(self))
@@ -857,10 +861,12 @@ class PvPClubTiersCog(commands.Cog):
         self.bot.add_view(DuelResultView(self))
         self.trivia_watcher.start()
         self.queue_recovery_watcher.start()
+        self.leaderboard_refresh_watcher.start()
 
     def cog_unload(self):
         self.trivia_watcher.cancel()
         self.queue_recovery_watcher.cancel()
+        self.leaderboard_refresh_watcher.cancel()
         if self.mongo_client:
             self.mongo_client.close()
 
@@ -1611,6 +1617,8 @@ class PvPClubTiersCog(commands.Cog):
             )
             results = await self.find_channel(guild, "results", public_category)
             activity = await self.find_channel(guild, "tier-activity", public_category)
+            tier_info = await self.find_channel(guild, "tier-info", public_category, True)
+            leaderboard = await self.find_channel(guild, "tier-leaderboard", public_category, True)
             logs_category = await self.find_category(guild, "PVPCLUBTIERS LOGS")
             log_overwrites = {
                 guild.default_role: discord.PermissionOverwrite(
@@ -1654,6 +1662,8 @@ class PvPClubTiersCog(commands.Cog):
                     "test_queue_channel_id": queue_channel.id,
                     "results_channel_id": results.id,
                     "activity_channel_id": activity.id,
+                    "tier_info_channel_id": tier_info.id,
+                    "leaderboard_channel_id": leaderboard.id,
                     "logs_channel_id": logs.id,
                     "matchmaking_channel_id": matchmaking.id,
                     "website_public": True,
@@ -1662,6 +1672,9 @@ class PvPClubTiersCog(commands.Cog):
                 upsert=True,
             )
             await self.ensure_test_queue_panel(guild)
+            await self.ensure_test_request_panel(guild)
+            await self.ensure_tier_info_panel(guild)
+            await self.ensure_leaderboard_panel(guild)
             await self.ensure_matchmaking_panel(guild)
             await ctx.send(
                 "✅ **PvPClubTiers setup complete!**\n"
