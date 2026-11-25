@@ -756,7 +756,7 @@ class DataStore:
 
 def embed(title: str, description: str = "", color: int = CYAN) -> discord.Embed:
     e = discord.Embed(title=title, description=description, color=color)
-    e.set_footer(text="PVPClub Empire • nya :3")
+    e.set_footer(text="PVPClub Empire • Community")
     return e
 
 
@@ -1076,7 +1076,7 @@ class EmpireBot(commands.Bot):
                     message = await channel.fetch_message(int(message_id))
                     entries = giveaway.get("entries", [])
                     winner_id = random.choice(entries) if entries else None
-                    result = f"Winner: <@{winner_id}>!" if winner_id else "Nobody entered. Skill issue? :3"
+                    result = f"Winner: <@{winner_id}>!" if winner_id else "Nobody entered this giveaway."
                     await message.edit(embed=embed("🎉 Giveaway ended!", f"**Prize:** {giveaway['prize']}\n{result}", PINK), view=None)
                     await channel.send(f"🎉 Giveaway finished! {result}")
                 except (discord.NotFound, discord.Forbidden, discord.HTTPException):
@@ -1712,7 +1712,7 @@ async def on_ready():
     log.info("Logged in as %s (%s)", bot.user, bot.user.id if bot.user else "unknown")
     if bot.user:
         await bot.change_presence(
-            activity=discord.Activity(type=discord.ActivityType.watching, name="mace whiffs & meow chains :3")
+            activity=discord.Activity(type=discord.ActivityType.watching, name="Minecraft PvP • Community Events")
         )
 
 
@@ -1747,7 +1747,7 @@ async def on_message(message: discord.Message):
             entries.append((message.author.id, now))
         if len({uid for uid, _ in entries}) >= 3:
             entries.clear()
-            await message.channel.send("🐾 **MEOW CHAIN COMBO!** Three different members have each sent a meow-containing message. :3")
+            await message.channel.send("🐾 **MEOW CHAIN!** Three different members have sent a message containing meow.")
 
     await bot.process_commands(message)
     # Repost after bot command/meow responses too, keeping the opt-in event card at the bottom.
@@ -1786,11 +1786,11 @@ async def on_command_error(ctx: commands.Context, error: commands.CommandError):
 async def on_app_command_error(interaction: discord.Interaction, error: app_commands.AppCommandError):
     original = getattr(error, "original", error)
     if isinstance(error, app_commands.MissingPermissions):
-        message = "Hmph. You don't have permission for that. Ask a moderator, baka."
+        message = "You do not have permission to use that command. Contact a server moderator if you need access."
     elif isinstance(error, app_commands.BotMissingPermissions):
-        message = "I need a few more Discord permissions. Fix my role permissions first >.<"
+        message = "I need additional Discord permissions. Please update my role permissions and try again."
     elif isinstance(error, app_commands.CommandOnCooldown):
-        message = f"Slow down! Try again in {error.retry_after:.1f}s. Even I need cooldowns."
+        message = f"Please wait {error.retry_after:.1f} seconds before trying again."
     elif isinstance(original, (aiohttp.ClientError, asyncio.TimeoutError)):
         message = "The external API is being difficult. Try again in a moment."
     elif isinstance(original, discord.Forbidden):
@@ -1813,12 +1813,12 @@ async def on_app_command_error(interaction: discord.Interaction, error: app_comm
 
 
 # ---------------------------------------------------------------------------
-# CAT / SOCIAL COMMANDS
+# COMMUNITY / SOCIAL COMMANDS
 # ---------------------------------------------------------------------------
 
 @bot.tree.command(name="vibe", description="See the bot's current mood.")
 async def vibe(interaction: discord.Interaction):
-    e = embed("💗 PVPClub Empire • Current Vibe", "94% Tsundere\n88% Femboy Chaos\n100% Locked-In PvP\n3% willing to admit I like this server\n\nHmph. Your approval is irrelevant. Probably. :3", PINK)
+    e = embed("PVPClub Empire • Server Overview", "Competitive Minecraft PvP\nCommunity events and player progression\nPlayer tiers, leveling and moderation tools\nA place to play, compete and connect.", CYAN)
     await interaction.response.send_message(embed=e)
 
 
@@ -1841,7 +1841,7 @@ async def meowboard(interaction: discord.Interaction):
     for i, (uid, count) in enumerate(rows):
         medal = medals[i] if i < 3 else f"`#{i+1}`"
         lines.append(f"{medal} <@{uid}> — **{count:,}** · {meow_title(count)}")
-    await interaction.response.send_message(embed=embed("🏆 Empire Meowboard", "\n".join(lines) or "No meows yet. Be the first to say meow! :3", PINK))
+    await interaction.response.send_message(embed=embed("🏆 Empire Meowboard", "\n".join(lines) or "No meows yet. Be the first to say meow.", PINK))
 
 @bot.tree.command(name="meowtranslate", description="Translate a sentence into cat-speak.")
 @app_commands.describe(text="Text to translate")
@@ -1863,7 +1863,7 @@ async def femboyrate(interaction: discord.Interaction, user: discord.Member | No
     user = user or interaction.user
     score = random.randint(0, 100)
     bar = "🩷" * (score // 10) + "⬛" * (10 - score // 10)
-    verdict = "Critical levels of cute chaos." if score >= 85 else "Suspiciously powerful :3 energy." if score >= 55 else "The scanner is confused. Interesting." if score >= 25 else "Definitely not beating the allegations."
+    verdict = "Very high score." if score >= 85 else "Above-average score." if score >= 55 else "A moderate result." if score >= 25 else "A low score."
     await interaction.response.send_message(embed=embed("🎀 Femboy Chaos Scanner", f"**Target:** {user.mention}\n**Result:** {score}%\n{bar}\n{verdict}", PINK))
 
 
@@ -1880,7 +1880,7 @@ async def iq(interaction: discord.Interaction, user: discord.Member | None = Non
 @bot.tree.command(name="coinflip", description="Flip a coin.")
 async def coinflip(interaction: discord.Interaction):
     result = random.choice(["HEADS", "TAILS"])
-    await interaction.response.send_message(embed=embed("🪙 Coinflip", f"**{result}**\nHmph. Don't act like I rigged it. >.<"))
+    await interaction.response.send_message(embed=embed("🪙 Coinflip", f"**{result}**"))
 
 
 @bot.tree.command(name="ship", description="Calculate two players' compatibility.")
@@ -2349,7 +2349,7 @@ class GiveawayView(discord.ui.View):
             msg = "Entry removed."
         else:
             entries.append(interaction.user.id)
-            msg = "You're entered! Good luck :3"
+            msg = "You're entered! Good luck."
         await bot.store.save()
         button.label = f"🎉 Enter Giveaway ({len(entries)})"
         await interaction.response.edit_message(view=self)
