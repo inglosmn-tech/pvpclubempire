@@ -3388,14 +3388,18 @@ class PvPClubTiersCog(commands.Cog):
     async def tier_leaderboard(self, interaction, gamemode: app_commands.Choice[str] | None = None):
         if not await self.require_db(interaction):
             return
+        await interaction.response.defer(thinking=True)
         mode = gamemode.value if gamemode else None
         if mode is None:
             embed = await self.build_leaderboard_embed(interaction.guild)
-            await interaction.response.send_message(embed=embed, view=LeaderboardPanelView(self))
+            await interaction.followup.send(embed=embed, view=LeaderboardPanelView(self))
             return
         rows = await self.make_leaderboard(interaction.guild.id, mode, 15)
         if not rows:
-            await interaction.response.send_message(f"No players have been tiered in {mode} yet.", ephemeral=True)
+            await interaction.followup.send(
+                f"No players have been tiered in {mode} yet.",
+                ephemeral=True,
+            )
             return
         lines = [
             f"**{i}.** {row['username']} — **{row['display_tier']}**"
@@ -3406,7 +3410,7 @@ class PvPClubTiersCog(commands.Cog):
             description="\n".join(lines),
             colour=0x55DDEB,
         )
-        await interaction.response.send_message(embed=embed)
+        await interaction.followup.send(embed=embed)
 
     @app_commands.command(name="tier-rank", description="Show a player's overall PvPClubTiers position.")
     @app_commands.guild_only()
