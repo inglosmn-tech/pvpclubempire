@@ -968,8 +968,29 @@ class PvPClubTiersCog(commands.Cog):
             None,
         )
         if channel:
+            edits = {}
             if channel.category_id != category.id:
-                await channel.edit(category=category, reason="PvPClubTiers setup")
+                edits["category"] = category
+            if send_disabled:
+                edits["overwrites"] = {
+                    guild.default_role: discord.PermissionOverwrite(
+                        view_channel=True,
+                        send_messages=False,
+                        create_public_threads=False,
+                        create_private_threads=False,
+                        send_messages_in_threads=False,
+                        read_message_history=True,
+                    ),
+                    guild.me: discord.PermissionOverwrite(
+                        view_channel=True,
+                        send_messages=True,
+                        embed_links=True,
+                        read_message_history=True,
+                        manage_messages=True,
+                    ),
+                }
+            if edits:
+                await channel.edit(**edits, reason="PvPClubTiers setup")
             return channel
         overwrite = {guild.default_role: discord.PermissionOverwrite(view_channel=True)}
         if send_disabled:
@@ -1177,7 +1198,7 @@ class PvPClubTiersCog(commands.Cog):
             if not member.bot and member.status != discord.Status.offline
         ]
         if is_open:
-            status_line = f"🟢 **Open.** {len(online_testers) or 'A'} {gamemode} tester(s) accepting players."
+            status_line = f"🟢 **Open.** A {gamemode} tester is accepting players."
             colour = 0x57D69A
         else:
             status_line = (
@@ -1215,6 +1236,8 @@ class PvPClubTiersCog(commands.Cog):
         queue_overwrites = {
             guild.default_role: discord.PermissionOverwrite(
                 view_channel=True, send_messages=False, read_message_history=True,
+                create_public_threads=False, create_private_threads=False,
+                send_messages_in_threads=False,
             ),
         }
         if guild.me:
@@ -1302,6 +1325,8 @@ class PvPClubTiersCog(commands.Cog):
                 overwrites={
                     guild.default_role: discord.PermissionOverwrite(
                         view_channel=True, send_messages=False, read_message_history=True,
+                        create_public_threads=False, create_private_threads=False,
+                        send_messages_in_threads=False,
                     ),
                     guild.me: discord.PermissionOverwrite(
                         view_channel=True, send_messages=True, embed_links=True,
@@ -1314,6 +1339,8 @@ class PvPClubTiersCog(commands.Cog):
             overwrites = {
                 guild.default_role: discord.PermissionOverwrite(
                     view_channel=True, send_messages=False, read_message_history=True,
+                    create_public_threads=False, create_private_threads=False,
+                    send_messages_in_threads=False,
                 ),
             }
             if guild.me:
