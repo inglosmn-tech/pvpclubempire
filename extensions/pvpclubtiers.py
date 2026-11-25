@@ -924,11 +924,10 @@ class PvPClubTiersCog(commands.Cog):
         if not isinstance(public_category, discord.CategoryChannel):
             public_category = discord.utils.get(guild.categories, name="PVPCLUBTIERS")
         if not isinstance(channel, discord.TextChannel):
-            channel = discord.utils.get(
-                guild.text_channels,
-                name="『🎮』 queues",
-            ) or discord.utils.get(guild.text_channels, name="queues") or discord.utils.get(
-                guild.text_channels, name="test-queues"
+            channel = next(
+                (item for item in guild.text_channels
+                 if re.sub(r"^『[^』]+』\\s*", "", item.name).casefold() in {"queues", "test-queues"}),
+                None,
             )
         queue_overwrites = {
             guild.default_role: discord.PermissionOverwrite(
@@ -1171,7 +1170,11 @@ class PvPClubTiersCog(commands.Cog):
         queue_channel_id = config.get("test_queue_channel_id")
         queue_channel = guild.get_channel(int(queue_channel_id)) if queue_channel_id else None
         if not isinstance(queue_channel, discord.TextChannel):
-            queue_channel = discord.utils.get(public_category.text_channels, name="test-queues")
+            queue_channel = next(
+                (item for item in public_category.text_channels
+                 if re.sub(r"^『[^』]+』\\s*", "", item.name).casefold() in {"queues", "test-queues"}),
+                None,
+            )
         queue_overwrites = {
             guild.default_role: discord.PermissionOverwrite(
                 view_channel=True, send_messages=False, read_message_history=True,
@@ -1183,14 +1186,14 @@ class PvPClubTiersCog(commands.Cog):
         }
         if queue_channel is None:
             queue_channel = await guild.create_text_channel(
-                "test-queues",
+                "『🎮』 queues",
                 category=public_category,
                 overwrites=queue_overwrites,
                 reason="PvPClubTiers public test queues",
             )
         else:
             await queue_channel.edit(
-                name="test-queues",
+                name="『🎮』 queues",
                 category=public_category,
                 overwrites=queue_overwrites,
                 reason="Reset public PvPClubTiers queue permissions",
@@ -1220,13 +1223,8 @@ class PvPClubTiersCog(commands.Cog):
                 if isinstance(channel, discord.TextChannel)
             )
 
-        request_channel_id = config.get("request_channel_id")
-        request_channel = guild.get_channel(int(request_channel_id)) if request_channel_id else None
-        if not isinstance(request_channel, discord.TextChannel):
-            request_channel = discord.utils.get(public_category.text_channels, name="request-test")
-        if isinstance(request_channel, discord.TextChannel) and request_channel.id != queue_channel.id:
-            if request_channel.name == "request-test" and request_channel.category_id == public_category.id:
-                old_channel_ids.add(request_channel.id)
+        # Reuse the old request-test channel for the new one-time IGN panel.
+        # It is intentionally not included in the legacy channel deletion list.
 
         deleted_old_channels = 0
         failed_old_channels = 0
@@ -1306,6 +1304,7 @@ class PvPClubTiersCog(commands.Cog):
             upsert=True,
         )
         await self.ensure_test_queue_panel(guild)
+        await self.ensure_test_request_panel(guild)
         return queue_channel, session_category, resolved_roles, deleted_old_channels, failed_old_channels
 
     @commands.command(name="tiersetup")
