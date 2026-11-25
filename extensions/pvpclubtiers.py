@@ -1193,7 +1193,7 @@ class PvPClubTiersCog(commands.Cog):
     async def build_test_queue_embed(self, guild: discord.Guild, gamemode: str) -> discord.Embed:
         config = await self.setting(guild.id)
         mode_config = (config.get("test_queue_modes") or {}).get(mode_key(gamemode), {})
-        is_open = bool(mode_config.get("open", False))
+        configured_open = bool(mode_config.get("open", False))
         count = await self.db_call(
             self.test_queue_entries.count_documents,
             {"guild_id": guild.id, "gamemode": gamemode, "status": "waiting"},
@@ -1204,12 +1204,21 @@ class PvPClubTiersCog(commands.Cog):
             member for member in (role.members if role else [])
             if not member.bot and member.status != discord.Status.offline
         ]
+        is_open = configured_open and bool(online_testers)
         if is_open:
-            status_line = f"🟢 **Open.** A {gamemode} tester is accepting players."
+            tester_word = "tester" if len(online_testers) == 1 else "testers"
+            status_line = (
+                f"🟢 **Open.** {len(online_testers)} {gamemode} {tester_word} accepting players."
+            )
             colour = 0x57D69A
         else:
+            reason = (
+                f"No {gamemode} tester online right now."
+                if not online_testers else
+                f"The {gamemode} queue has not been opened by a tester yet."
+            )
             status_line = (
-                f"🔴 **Closed.** No {gamemode} tester online right now. "
+                f"🔴 **Closed.** {reason} "
                 f"{count} on the waitlist · you'll be pinged when it opens."
             )
             colour = 0x747B8C
@@ -1870,7 +1879,7 @@ class PvPClubTiersCog(commands.Cog):
         await ctx.reply(
             f"✅ **Tester applications are ready!**\n"
             f"• Application panel: {ctx.channel.mention}\n"
-            f"• Owner-only review channel: {reviewchannel.mention}\n"
+            f"• Review channel: {reviewchannel.mention} (only the server owner can accept or reject)\n"
             f"• Applicants can choose one of the {len(GAMEMODES)} gamemodes.\n"
             "• Accepting an application assigns only that gamemode's Tester role.",
             mention_author=False,
