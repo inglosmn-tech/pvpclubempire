@@ -657,6 +657,7 @@ class PvPClubTiersCog(commands.Cog):
         self.mongo_client = None
         self.db = None
         self.matchmaking_queue_lock = asyncio.Lock()
+        self.test_queue_lock = asyncio.Lock()
         self.tester_application_lock = asyncio.Lock()
 
     async def db_call(self, function, *args, **kwargs):
@@ -682,6 +683,7 @@ class PvPClubTiersCog(commands.Cog):
                 self.tester_stats = self.db["tester_stats"]
                 self.duels = self.db["duels"]
                 self.matchmaking_queue = self.db["matchmaking_queue"]
+                self.test_queue_entries = self.db["test_queue_entries"]
                 self.trivia_scores = self.db["trivia_scores"]
                 self.trivia_answers = self.db["trivia_answers"]
                 self.tester_applications = self.db["tester_applications"]
@@ -692,6 +694,8 @@ class PvPClubTiersCog(commands.Cog):
                 await asyncio.to_thread(self.duels.create_index, "duel_id", unique=True)
                 await asyncio.to_thread(self.matchmaking_queue.create_index, [("guild_id", ASCENDING), ("gamemode", ASCENDING), ("status", ASCENDING), ("created_at", ASCENDING)])
                 await asyncio.to_thread(self.matchmaking_queue.create_index, [("guild_id", ASCENDING), ("user_id", ASCENDING), ("status", ASCENDING)])
+                await asyncio.to_thread(self.test_queue_entries.create_index, [("guild_id", ASCENDING), ("gamemode", ASCENDING), ("status", ASCENDING), ("created_at", ASCENDING)])
+                await asyncio.to_thread(self.test_queue_entries.create_index, [("guild_id", ASCENDING), ("discord_id", ASCENDING), ("status", ASCENDING)])
                 await asyncio.to_thread(self.trivia_scores.create_index, [("guild_id", ASCENDING), ("user_id", ASCENDING)], unique=True)
                 await asyncio.to_thread(self.trivia_answers.create_index, [("guild_id", ASCENDING), ("question_id", ASCENDING), ("user_id", ASCENDING)], unique=True)
                 await asyncio.to_thread(self.tester_applications.create_index, [("guild_id", ASCENDING), ("review_message_id", ASCENDING)], unique=True)
@@ -705,7 +709,7 @@ class PvPClubTiersCog(commands.Cog):
                 self.db = None
         else:
             log.warning("MONGO_URI is not set; PvPClubTiers will be disabled until it is configured.")
-        self.bot.add_view(TierRequestPanelView(self))
+        self.bot.add_view(TestQueuePanelView(self))
         self.bot.add_view(TesterApplicationPanelView(self))
         self.bot.add_view(TesterApplicationReviewView(self))
         self.bot.add_view(TicketControlsView(self))
