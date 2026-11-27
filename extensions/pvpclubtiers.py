@@ -1217,13 +1217,50 @@ class PvPClubTiersCog(commands.Cog):
         return channel
 
     async def build_leaderboard_embed(self, guild: discord.Guild) -> discord.Embed:
-        overall = await self.make_leaderboard(guild.id, None, 15)
+        # Read player profiles once. The old implementation scanned the full
+        # collection separately for the overall board and each of 11 gamemodes.
+        documents = await self.db_call(
+            lambda: list(self.players.find(
+                {"guild_id": guild.id, "tiers": {"$ne": {}}},
+                {
+                    "_id": 0,
+                    "discord_id": 1,
+                    "discordId": 1,
+                    "username": 1,
+                    "tiers": 1,
+                    "total_points": 1,
+                    "elo": 1,
+                    "wins": 1,
+                    "losses": 1,
+                    "duels_played": 1,
+                    "created_at": 1,
+                },
+            ))
+        )
+        players = []
+        for document in documents:
+            row = safe_player(document)
+            best, best_mode = best_tier(row.get("tiers") or {})
+            row["best_tier"] = best
+            row["best_mode"] = best_mode
+            row["sort_index"] = TIERS.index(best) if best in TIERS else len(TIERS)
+            players.append(row)
+
+        overall = sorted(
+            players,
+            key=lambda row: (
+                -row["totalPoints"],
+                row["sort_index"],
+                -int(row.get("elo", 1000)),
+                row["username"].casefold(),
+            ),
+        )[:15]
         lines = ["**🏆 Overall leaderboard**"]
         if overall:
             medals = {1: "🥇", 2: "🥈", 3: "🥉"}
             for index, row in enumerate(overall, 1):
                 mark = medals.get(index, f"{index}.")
-                user_id = str(row.get("discordId") or "")
+                user_id = str(row.get("discordId") or row.get("discord_id") or "")
                 mention = f"<@{user_id}>" if user_id.isdigit() else ""
                 lines.append(
                     f"{mark} **{discord.utils.escape_markdown(str(row.get('username', 'Unknown')))}**"
@@ -1234,15 +1271,24 @@ class PvPClubTiersCog(commands.Cog):
             lines.append("No players have been tiered yet.")
 
         for mode in GAMEMODES:
-            rows = await self.make_leaderboard(guild.id, mode, 3)
-            if not rows:
+            mode_rows = [
+                row for row in players
+                if (row.get("tiers") or {}).get(mode) in TIERS
+            ]
+            mode_rows.sort(key=lambda row: (
+                TIERS.index(row["tiers"][mode]),
+                -POINTS.get(row["tiers"][mode], 0),
+                -row["totalPoints"],
+                row["username"].casefold(),
+            ))
+            mode_rows = mode_rows[:3]
+            if not mode_rows:
                 continue
-            mode_lines = []
-            for row in rows:
-                mode_lines.append(
-                    f"**{row['display_tier']}** — "
-                    f"{discord.utils.escape_markdown(str(row.get('username', 'Unknown')))}"
-                )
+            mode_lines = [
+                f"**{row['tiers'][mode]}** — "
+                f"{discord.utils.escape_markdown(str(row.get('username', 'Unknown')))}"
+                for row in mode_rows
+            ]
             lines.append(
                 f"\n**{MODE_EMOJIS.get(mode, '🎮')} {mode}**\n" + "\n".join(mode_lines)
             )
@@ -1679,6 +1725,35 @@ class PvPClubTiersCog(commands.Cog):
         if return_status:
             return channel, panel is not None
         return channel
+
+    async def refresh_test_queue_mode_panel(self, guild: discord.Guild, gamemode: str):
+        if gamemode not in GAMEMODES or self.db is None:
+            return
+        try:
+            config = await self.setting(guild.id)
+            channel_id = config.get("test_queue_channel_id")
+            channel = guild.get_channel(int(channel_id)) if channel_id else None
+            message_id = (config.get("test_queue_panel_message_ids") or {}).get(mode_key(gamemode))
+            if not isinstance(channel, discord.TextChannel) or not message_id:
+                await self.ensure_test_queue_panel(guild)
+                return
+            try:
+                message = await channel.fetch_message(int(message_id))
+            except (discord.NotFound, discord.Forbidden, discord.HTTPException, ValueError):
+                await self.ensure_test_queue_panel(guild)
+                return
+            mode_config = (config.get("test_queue_modes") or {}).get(mode_key(gamemode), {})
+            await message.edit(
+                embed=await self.build_test_queue_embed(guild, gamemode),
+                view=GamemodeTestQueueView(self, gamemode, is_open=bool(mode_config.get("open", False))),
+                allowed_mentions=discord.AllowedMentions.none(),
+            )
+        except Exception:
+            log.exception(
+                "Could not refresh %s queue panel in guild %s",
+                gamemode,
+                guild.id,
+            )
 
     async def refresh_test_queue_panel(self, guild: discord.Guild):
         try:
@@ -2584,10 +2659,18 @@ class PvPClubTiersCog(commands.Cog):
             await interaction.followup.send("Use this control inside the server.", ephemeral=True)
             return
         config = await self.setting(interaction.guild.id)
-        allowed_modes = [
-            mode for mode in GAMEMODES
-            if await self.has_gamemode_tester_role(interaction.user, mode, config=config)
-        ]
+        is_server_staff = (
+            interaction.user.guild_permissions.manage_guild
+            or interaction.user.guild_permissions.administrator
+        )
+        allowed_modes = (
+            list(GAMEMODES)
+            if is_server_staff
+            else [
+                mode for mode in GAMEMODES
+                if await self.has_gamemode_tester_role(interaction.user, mode, config=config)
+            ]
+        )
         if not allowed_modes:
             await interaction.followup.send(
                 "You need a gamemode Tester role to manage test queues.",
@@ -2913,7 +2996,7 @@ class PvPClubTiersCog(commands.Cog):
             except Exception:
                 log.exception("Could not add %s to the %s test queue", interaction.user.id, gamemode)
                 ok, message = False, "I couldn't add you to the queue. Please try again or contact staff."
-        await self.refresh_test_queue_panel(interaction.guild)
+        await self.refresh_test_queue_mode_panel(interaction.guild, gamemode)
         await interaction.followup.send(message if ok else f"❌ {message}", ephemeral=True)
 
     async def leave_test_queue(self, interaction: discord.Interaction, gamemode: str | None = None):
@@ -3007,7 +3090,7 @@ class PvPClubTiersCog(commands.Cog):
 
         if now_open:
             await self.add_global_signups_to_queue(interaction.guild, gamemode)
-        await self.refresh_test_queue_panel(interaction.guild)
+        await self.refresh_test_queue_mode_panel(interaction.guild, gamemode)
         if now_open:
             waiting = await self.db_call(
                 lambda: list(self.test_queue_entries.find({
@@ -3484,7 +3567,10 @@ class PvPClubTiersCog(commands.Cog):
             await self.db_call(self.tester_stats.update_one, {"guild_id": guild.id, "tester_id": tester.id},
                 {"$inc": {"tests_completed": 1}, "$set": {"tester_name": tester.display_name, "updated_at": now}}, upsert=True)
         updated = await self.get_player(guild.id, member.id)
-        await self.sync_best_role(member, updated)
+        try:
+            await self.sync_best_role(member, updated)
+        except (discord.Forbidden, discord.HTTPException):
+            log.exception("Tier was saved, but the best-tier role could not be synced for %s", member.id)
         best, best_mode = best_tier(tiers)
         msg = (f"{member.mention} ({display_name}) received **{new_tier}** in **{gamemode}**.\n"
                f"Previous: **{old_tier or 'Unranked'}**\nOverall role: **{best or 'Unranked'}**"
@@ -3493,11 +3579,21 @@ class PvPClubTiersCog(commands.Cog):
         embed.set_footer(text=f"Recorded by {tester.display_name} • mcpvp.club")
         config = await self.setting(guild.id)
         for key in ("results_channel_id", "activity_channel_id"):
-            channel = guild.get_channel(config.get(key, 0))
+            channel_id = config.get(key)
+            channel = guild.get_channel(int(channel_id)) if channel_id else None
             if channel:
-                await channel.send(embed=embed)
+                try:
+                    await channel.send(
+                        embed=embed,
+                        allowed_mentions=discord.AllowedMentions.none(),
+                    )
+                except discord.HTTPException:
+                    log.exception("Tier was saved, but result announcement failed in channel %s", channel.id)
         if config.get("leaderboard_channel_id"):
-            await self.ensure_leaderboard_panel(guild)
+            try:
+                await self.ensure_leaderboard_panel(guild)
+            except Exception:
+                log.exception("Tier was saved, but leaderboard refresh failed in guild %s", guild.id)
         return old_tier, best, best_mode
 
     @commands.command(name="settier")
@@ -3663,70 +3759,120 @@ class PvPClubTiersCog(commands.Cog):
                 ephemeral=True,
             )
 
-    @app_commands.command(name="set-tier", description="Record the result for the private test session you are assigned.")
+    @app_commands.command(
+        name="set-tier",
+        description="Record a tier result in your assigned test session or the player's support ticket.",
+    )
     @app_commands.guild_only()
     @app_commands.choices(gamemode=MODE_OPTIONS, tier=TIER_OPTIONS)
-    async def set_tier(self, interaction, member: discord.Member, gamemode: app_commands.Choice[str],
-                       tier: app_commands.Choice[str]):
-        if not await self.require_db(interaction):
+    async def set_tier(
+        self,
+        interaction: discord.Interaction,
+        member: discord.Member,
+        gamemode: app_commands.Choice[str],
+        tier: app_commands.Choice[str],
+    ):
+        # Acknowledge immediately, before MongoDB or permission checks, to avoid
+        # Discord's "application did not respond" failure on slower connections.
+        if not interaction.response.is_done():
+            await interaction.response.defer(thinking=True, ephemeral=True)
+
+        guild = interaction.guild
+        if guild is None:
+            await interaction.followup.send("Use /set-tier inside the server.", ephemeral=True)
             return
-        await interaction.response.defer(thinking=True)
-        actor = interaction.user
-        if not isinstance(actor, discord.Member) or not await self.staff_or_tester(actor, gamemode.value):
+        if self.db is None:
             await interaction.followup.send(
-                f"You need the {gamemode.value} Tester role or server management permissions.",
+                "PvPClubTiers database is not connected. Please contact an administrator.",
                 ephemeral=True,
             )
             return
+
+        actor = interaction.user
+        if not isinstance(actor, discord.Member) or not await self.staff_or_tester(actor, gamemode.value):
+            await interaction.followup.send(
+                f"You need the **{gamemode.value} Tester** role or server management permissions.",
+                ephemeral=True,
+            )
+            return
+
         ticket = await self.db_call(self.tickets.find_one, {
-            "guild_id": interaction.guild.id,
+            "guild_id": guild.id,
             "channel_id": interaction.channel_id,
             "status": "claimed",
             "session_type": "queue",
             "claimed_by": actor.id,
         })
-        if not ticket:
-            await interaction.followup.send(
-                "Run this command inside the private test session assigned to you. "
-                "Only the tester who started that session can submit its result.",
-                ephemeral=True,
-            )
-            return
-        if ticket["gamemode"] != gamemode.value or ticket["discord_id"] != member.id:
-            await interaction.followup.send(
-                "The selected player and gamemode must match this private test session.",
-                ephemeral=True,
-            )
-            return
+        support_ticket = False
+        if ticket is None:
+            # The normal Empire ticket panel creates channels with topic
+            # ticket:<owner_id>. Allow staff/testers to record a result there,
+            # but only for the member who opened that exact ticket.
+            channel = interaction.channel
+            topic = channel.topic if isinstance(channel, discord.TextChannel) else None
+            match = re.fullmatch(r"ticket:(\d+)", topic or "")
+            support_owner_id = int(match.group(1)) if match else None
+            if support_owner_id != member.id:
+                await interaction.followup.send(
+                    "This is not your assigned private test session or the selected player's support ticket. "
+                    "Open the player's ticket or use the private test channel created by the queue.",
+                    ephemeral=True,
+                )
+                return
+            support_ticket = True
+        else:
+            if ticket.get("gamemode") != gamemode.value or int(ticket.get("discord_id", 0)) != member.id:
+                await interaction.followup.send(
+                    "The selected player and gamemode must match this private test session.",
+                    ephemeral=True,
+                )
+                return
+
         try:
-            await self.save_tier(
-                interaction.guild, member, gamemode.value, tier.value, actor,
-                "test", ticket.get("username"),
+            old_tier, best, best_mode = await self.save_tier(
+                guild,
+                member,
+                gamemode.value,
+                tier.value,
+                actor,
+                "test",
+                ticket.get("username") if ticket else None,
             )
-        except (ValueError, PyMongoError, discord.HTTPException):
-            log.exception("Could not save PvPClubTiers result")
+        except Exception:
+            log.exception("Could not save /set-tier for %s in %s", member.id, gamemode.value)
             await interaction.followup.send(
-                "Could not save this tier result. Check the Render logs and try again.",
+                "I couldn't save that tier. The error was logged; please try again.",
                 ephemeral=True,
             )
             return
-        await self.db_call(self.tickets.update_one, {"ticket_id": ticket["ticket_id"]}, {
-            "$set": {"status": "completed", "completed_at": datetime.now(timezone.utc)}
-        })
-        await self.db_call(
-            self.test_queue_entries.update_one,
-            {"queue_id": ticket.get("queue_id"), "status": "testing"},
-            {"$set": {"status": "completed", "completed_at": datetime.now(timezone.utc)}},
-        )
-        await self.refill_open_queues_from_signups(
-            interaction.guild,
-            exclude_modes={gamemode.value},
-        )
+
+        if ticket:
+            await self.db_call(self.tickets.update_one, {"ticket_id": ticket["ticket_id"]}, {
+                "$set": {"status": "completed", "completed_at": datetime.now(timezone.utc)}
+            })
+            await self.db_call(
+                self.test_queue_entries.update_one,
+                {"queue_id": ticket.get("queue_id"), "status": "testing"},
+                {"$set": {"status": "completed", "completed_at": datetime.now(timezone.utc)}},
+            )
+
         await interaction.followup.send(
             f"✅ Saved **{tier.value}** for {member.mention} in **{gamemode.value}**. "
-            "The test is complete. Close the session when you are finished.",
+            f"Previous: **{old_tier or 'Unranked'}**. Overall: **{best or 'Unranked'}**"
+            + (f" in **{best_mode}**." if best_mode else "."),
+            ephemeral=True,
         )
-        await self.refresh_test_queue_panel(interaction.guild)
+
+        # Keep post-response housekeeping small and scoped to the affected mode.
+        if ticket:
+            try:
+                await self.refill_open_queues_from_signups(
+                    guild,
+                    exclude_modes={gamemode.value},
+                )
+                await self.refresh_test_queue_mode_panel(guild, gamemode.value)
+            except Exception:
+                log.exception("Tier saved, but queue follow-up refresh failed for %s", gamemode.value)
 
     @app_commands.command(name="ign", description="Link or update your Minecraft username.")
     @app_commands.guild_only()
