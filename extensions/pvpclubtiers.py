@@ -644,11 +644,26 @@ class TesterQueueModeSelect(discord.ui.Select):
 
     async def callback(self, interaction: discord.Interaction):
         self.parent_view.selected_gamemode = self.values[0]
-        await self.parent_view.refresh_selected_mode(interaction.guild)
-        await interaction.response.edit_message(
-            content=self.parent_view.status_message(),
-            view=self.parent_view,
-        )
+        try:
+            await self.parent_view.refresh_selected_mode(interaction.guild)
+            await interaction.response.edit_message(
+                content=self.parent_view.status_message(),
+                view=self.parent_view,
+            )
+        except asyncio.TimeoutError:
+            log.warning("Queue status lookup timed out for %s", self.values[0])
+            self.parent_view.queue_states[self.values[0]] = False
+            self.parent_view.apply_button_state()
+            await interaction.response.edit_message(
+                content=f"I couldn't load **{self.values[0]}** queue status because MongoDB is responding slowly. Try selecting it again.",
+                view=self.parent_view,
+            )
+        except Exception:
+            log.exception("Could not load selected queue state for %s", self.values[0])
+            await interaction.response.send_message(
+                "I couldn't load that queue's status. The error has been logged.",
+                ephemeral=True,
+            )
 
 
 class TesterQueueControlsView(discord.ui.View):
@@ -690,7 +705,7 @@ class TesterQueueControlsView(discord.ui.View):
         if guild is None or self.selected_gamemode is None:
             self.apply_button_state()
             return
-        config = await self.cog.setting(guild.id)
+        config = await asyncio.wait_for(self.cog.setting(guild.id), timeout=4.0)
         modes = config.get("test_queue_modes") or {}
         state = bool((modes.get(mode_key(self.selected_gamemode)) or {}).get("open", False))
         self.queue_states[self.selected_gamemode] = state
@@ -2678,38 +2693,135 @@ class PvPClubTiersCog(commands.Cog):
                 )
 
     async def show_tester_queue_controls(self, interaction: discord.Interaction):
-        if not await self.require_db(interaction):
+        # Respond to the button first. Database reads must never leave the
+        # interaction sitting on Discord's "thinking…" indicator indefinitely.
+        if interaction.guild is None or not isinstance(interaction.user, discord.Member):
+            if not interaction.response.is_done():
+                await interaction.response.send_message(
+                    "Tester Controls can only be opened inside the server.",
+                    ephemeral=True,
+                )
             return
-        await interaction.response.defer(ephemeral=True, thinking=True)
-        if not isinstance(interaction.user, discord.Member):
-            await interaction.followup.send("Use this control inside the server.", ephemeral=True)
+        if self.db is None:
+            if not interaction.response.is_done():
+                await interaction.response.send_message(
+                    "PvPClubTiers database is not connected. Please contact the server owner.",
+                    ephemeral=True,
+                )
             return
-        config = await self.setting(interaction.guild.id)
-        is_server_staff = guild_owner_or_manager(interaction.user)
-        allowed_modes = (
-            list(GAMEMODES)
-            if is_server_staff
-            else [
+
+        member = interaction.user
+        is_owner = member.id == interaction.guild.owner_id
+        is_server_staff = guild_owner_or_manager(member)
+
+        # The server owner and managers don't need a database lookup just to
+        # open the controls. Show the UI immediately, then hydrate queue states.
+        if is_server_staff:
+            allowed_modes = list(GAMEMODES)
+            queue_states = {}
+            status_note = "Controls opened. Loading current queue states…"
+            try:
+                if not interaction.response.is_done():
+                    await interaction.response.send_message(
+                        status_note,
+                        view=TesterQueueControlsView(self, allowed_modes, queue_states),
+                        ephemeral=True,
+                    )
+                    response_message = await interaction.original_response()
+                else:
+                    response_message = await interaction.followup.send(
+                        status_note,
+                        view=TesterQueueControlsView(self, allowed_modes, queue_states),
+                        ephemeral=True,
+                        wait=True,
+                    )
+            except Exception:
+                log.exception("Could not send owner/staff tester controls in guild %s", interaction.guild.id)
+                try:
+                    if interaction.response.is_done():
+                        await interaction.followup.send(
+                            "I couldn't display Tester Controls. The error has been logged.",
+                            ephemeral=True,
+                        )
+                except discord.HTTPException:
+                    pass
+                return
+
+            try:
+                config = await asyncio.wait_for(self.setting(interaction.guild.id), timeout=4.0)
+                queue_modes = config.get("test_queue_modes") or {}
+                view = response_message.components
+                controls_view = TesterQueueControlsView(
+                    self,
+                    allowed_modes,
+                    {
+                        mode: bool((queue_modes.get(mode_key(mode)) or {}).get("open", False))
+                        for mode in allowed_modes
+                    },
+                )
+                await response_message.edit(
+                    content="Select the exact gamemode you are managing. The menu shows each queue's current state:",
+                    view=controls_view,
+                )
+            except asyncio.TimeoutError:
+                log.warning("Tester Controls state lookup timed out in guild %s", interaction.guild.id)
+                try:
+                    await response_message.edit(
+                        content="Controls are ready, but MongoDB is responding slowly. Select a gamemode to retry its live status.",
+                        view=TesterQueueControlsView(self, allowed_modes, queue_states),
+                    )
+                except discord.HTTPException:
+                    pass
+            except Exception:
+                log.exception("Could not load queue states for Tester Controls in guild %s", interaction.guild.id)
+                try:
+                    await response_message.edit(
+                        content="Controls are ready, but I couldn't load queue states. Select a gamemode to retry.",
+                        view=TesterQueueControlsView(self, allowed_modes, queue_states),
+                    )
+                except discord.HTTPException:
+                    pass
+            return
+
+        # Non-owner testers only see the gamemodes mapped to their Tester roles.
+        try:
+            config = await asyncio.wait_for(self.setting(interaction.guild.id), timeout=4.0)
+            allowed_modes = [
                 mode for mode in GAMEMODES
-                if await self.has_gamemode_tester_role(interaction.user, mode, config=config)
+                if await self.has_gamemode_tester_role(member, mode, config=config)
             ]
-        )
-        if not allowed_modes:
-            await interaction.followup.send(
-                "You need a gamemode Tester role to manage test queues.",
-                ephemeral=True,
-            )
-            return
-        queue_modes = config.get("test_queue_modes") or {}
-        queue_states = {
-            mode: bool((queue_modes.get(mode_key(mode)) or {}).get("open", False))
-            for mode in allowed_modes
-        }
-        await interaction.followup.send(
-            "Select the exact gamemode you are managing. The menu shows whether each queue is open or closed:",
-            view=TesterQueueControlsView(self, allowed_modes, queue_states),
-            ephemeral=True,
-        )
+            if not allowed_modes:
+                message = "You need a gamemode Tester role to manage test queues."
+                if interaction.response.is_done():
+                    await interaction.followup.send(message, ephemeral=True)
+                else:
+                    await interaction.response.send_message(message, ephemeral=True)
+                return
+            queue_modes = config.get("test_queue_modes") or {}
+            queue_states = {
+                mode: bool((queue_modes.get(mode_key(mode)) or {}).get("open", False))
+                for mode in allowed_modes
+            }
+            view = TesterQueueControlsView(self, allowed_modes, queue_states)
+            message = "Select the exact gamemode you are managing. The menu shows whether each queue is open or closed:"
+            if interaction.response.is_done():
+                await interaction.followup.send(message, view=view, ephemeral=True)
+            else:
+                await interaction.response.send_message(message, view=view, ephemeral=True)
+        except asyncio.TimeoutError:
+            log.warning("Tester role lookup timed out for %s in guild %s", member.id, interaction.guild.id)
+            message = "MongoDB is responding slowly, so I couldn't load your Tester roles. Try again in a moment."
+            if interaction.response.is_done():
+                await interaction.followup.send(message, ephemeral=True)
+            else:
+                await interaction.response.send_message(message, ephemeral=True)
+        except Exception:
+            log.exception("Could not open Tester Controls for %s in guild %s", member.id, interaction.guild.id)
+            message = "I couldn't open Tester Controls. The error has been logged; please try again."
+            if interaction.response.is_done():
+                await interaction.followup.send(message, ephemeral=True)
+            else:
+                await interaction.response.send_message(message, ephemeral=True)
 
     async def enqueue_test_member(
         self,
