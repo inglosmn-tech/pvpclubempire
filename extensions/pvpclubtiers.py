@@ -644,25 +644,29 @@ class TesterQueueModeSelect(discord.ui.Select):
 
     async def callback(self, interaction: discord.Interaction):
         self.parent_view.selected_gamemode = self.values[0]
+        # Acknowledge the select interaction immediately; MongoDB can be slow.
+        await interaction.response.defer()
         try:
             await self.parent_view.refresh_selected_mode(interaction.guild)
-            await interaction.response.edit_message(
+            await interaction.edit_original_response(
                 content=self.parent_view.status_message(),
                 view=self.parent_view,
+                allowed_mentions=discord.AllowedMentions.none(),
             )
         except asyncio.TimeoutError:
             log.warning("Queue status lookup timed out for %s", self.values[0])
             self.parent_view.queue_states[self.values[0]] = False
             self.parent_view.apply_button_state()
-            await interaction.response.edit_message(
+            self.parent_view.refresh_selector_options()
+            await interaction.edit_original_response(
                 content=f"I couldn't load **{self.values[0]}** queue status because MongoDB is responding slowly. Try selecting it again.",
                 view=self.parent_view,
             )
         except Exception:
             log.exception("Could not load selected queue state for %s", self.values[0])
-            await interaction.response.send_message(
-                "I couldn't load that queue's status. The error has been logged.",
-                ephemeral=True,
+            await interaction.edit_original_response(
+                content="I couldn't load that queue's status. The error has been logged.",
+                view=self.parent_view,
             )
 
 
@@ -2785,6 +2789,8 @@ class PvPClubTiersCog(commands.Cog):
 
         # Non-owner testers only see the gamemodes mapped to their Tester roles.
         try:
+            if not interaction.response.is_done():
+                await interaction.response.defer(ephemeral=True, thinking=True)
             config = await asyncio.wait_for(self.setting(interaction.guild.id), timeout=4.0)
             allowed_modes = [
                 mode for mode in GAMEMODES
@@ -2804,10 +2810,7 @@ class PvPClubTiersCog(commands.Cog):
             }
             view = TesterQueueControlsView(self, allowed_modes, queue_states)
             message = "Select the exact gamemode you are managing. The menu shows whether each queue is open or closed:"
-            if interaction.response.is_done():
-                await interaction.followup.send(message, view=view, ephemeral=True)
-            else:
-                await interaction.response.send_message(message, view=view, ephemeral=True)
+            await interaction.followup.send(message, view=view, ephemeral=True)
         except asyncio.TimeoutError:
             log.warning("Tester role lookup timed out for %s in guild %s", member.id, interaction.guild.id)
             message = "MongoDB is responding slowly, so I couldn't load your Tester roles. Try again in a moment."
