@@ -88,6 +88,30 @@ TRIVIA_QUESTIONS = [
 def mode_key(value: str) -> str:
     return re.sub(r"[^a-z0-9]+", "_", value.casefold()).strip("_")
 
+
+def guild_owner_or_manager(member: discord.Member) -> bool:
+    """The actual Discord guild owner always has PvPClubTiers management access."""
+    guild = getattr(member, "guild", None)
+    if guild is None:
+        return False
+    permissions = getattr(member, "guild_permissions", None)
+    return (
+        member.id == guild.owner_id
+        or bool(permissions and (permissions.manage_guild or permissions.administrator))
+    )
+
+
+def owner_or_manager_interaction(interaction: discord.Interaction) -> bool:
+    guild = interaction.guild
+    member = interaction.user
+    if guild is None or not isinstance(member, discord.Member):
+        return False
+    return guild_owner_or_manager(member)
+
+
+def owner_or_manager_context(ctx: commands.Context) -> bool:
+    return bool(ctx.guild and isinstance(ctx.author, discord.Member) and guild_owner_or_manager(ctx.author))
+
 def plain_discord_name(value: str) -> str:
     value = re.sub(r"^『[^』]+』\s*", "", value.strip())
     value = re.sub(r"^[^│|]+[│|]\s*", "", value)
@@ -1030,7 +1054,7 @@ class PvPClubTiersCog(commands.Cog):
         return await self.get_player(guild_id, member.id)
 
     async def staff_or_tester(self, member: discord.Member, gamemode: str) -> bool:
-        if member.guild_permissions.manage_guild or member.guild_permissions.administrator:
+        if guild_owner_or_manager(member):
             return True
 
         # Prefer the configured role ID so testers still work if a role is
@@ -1055,9 +1079,11 @@ class PvPClubTiersCog(commands.Cog):
         *,
         config: dict | None = None,
     ) -> bool:
-        """Check the actual gamemode Tester role; staff permissions are not a bypass."""
+        """Check the gamemode Tester role, with an explicit server-owner override."""
         if gamemode not in GAMEMODES:
             return False
+        if member.id == member.guild.owner_id:
+            return True
         if config is None:
             config = await self.setting(member.guild.id)
 
@@ -2000,7 +2026,7 @@ class PvPClubTiersCog(commands.Cog):
 
     @commands.command(name="v3")
     @commands.guild_only()
-    @commands.has_guild_permissions(manage_guild=True)
+    @commands.check(owner_or_manager_context)
     async def v3(self, ctx: commands.Context):
         """Refresh the V3 signup and queue panels without resetting queue entries."""
         if self.db is None:
@@ -2031,7 +2057,7 @@ class PvPClubTiersCog(commands.Cog):
 
     @commands.command(name="tiersetup")
     @commands.guild_only()
-    @commands.has_guild_permissions(manage_guild=True)
+    @commands.check(owner_or_manager_context)
     async def tiersetup(self, ctx: commands.Context):
         if self.db is None:
             await ctx.reply("Add MONGO_URI to Render Environment and restart the bot before running tier setup.")
@@ -2151,7 +2177,7 @@ class PvPClubTiersCog(commands.Cog):
 
     @commands.command(name="resetuptest")
     @commands.guild_only()
-    @commands.has_guild_permissions(manage_guild=True)
+    @commands.check(owner_or_manager_context)
     async def resetuptest(self, ctx: commands.Context):
         if self.db is None:
             await ctx.reply("PvPClubTiers database is not connected. Check MONGO_URI in Render and restart the bot.")
@@ -2193,7 +2219,7 @@ class PvPClubTiersCog(commands.Cog):
 
     @commands.command(name="testerappsetup")
     @commands.guild_only()
-    @commands.has_guild_permissions(manage_guild=True)
+    @commands.check(owner_or_manager_context)
     async def testerappsetup(self, ctx: commands.Context, reviewchannel: discord.TextChannel):
         """Create the public tester application panel and set its review channel."""
         if self.db is None:
@@ -2659,10 +2685,7 @@ class PvPClubTiersCog(commands.Cog):
             await interaction.followup.send("Use this control inside the server.", ephemeral=True)
             return
         config = await self.setting(interaction.guild.id)
-        is_server_staff = (
-            interaction.user.guild_permissions.manage_guild
-            or interaction.user.guild_permissions.administrator
-        )
+        is_server_staff = guild_owner_or_manager(interaction.user)
         allowed_modes = (
             list(GAMEMODES)
             if is_server_staff
@@ -3833,7 +3856,7 @@ class PvPClubTiersCog(commands.Cog):
 
     @app_commands.command(
         name="set-tier",
-        description="Record a tier result in your assigned test session or the player's support ticket.",
+        description="Record a tier result; the server owner can set any member's tier from anywhere.",
     )
     @app_commands.guild_only()
     @app_commands.choices(gamemode=MODE_OPTIONS, tier=TIER_OPTIONS)
@@ -3844,8 +3867,7 @@ class PvPClubTiersCog(commands.Cog):
         gamemode: app_commands.Choice[str],
         tier: app_commands.Choice[str],
     ):
-        # Acknowledge immediately, before MongoDB or permission checks, to avoid
-        # Discord's "application did not respond" failure on slower connections.
+        # Acknowledge immediately, before MongoDB or permission checks.
         if not interaction.response.is_done():
             await interaction.response.defer(thinking=True, ephemeral=True)
 
@@ -3861,39 +3883,60 @@ class PvPClubTiersCog(commands.Cog):
             return
 
         actor = interaction.user
-        if not isinstance(actor, discord.Member) or not await self.staff_or_tester(actor, gamemode.value):
+        is_owner = isinstance(actor, discord.Member) and actor.id == guild.owner_id
+        if not isinstance(actor, discord.Member) or (
+            not is_owner and not await self.staff_or_tester(actor, gamemode.value)
+        ):
             await interaction.followup.send(
-                f"You need the **{gamemode.value} Tester** role or server management permissions.",
+                f"You need the **{gamemode.value} Tester** role or server management permissions. "
+                "The server owner can use this command in any channel.",
                 ephemeral=True,
             )
             return
 
-        ticket = await self.db_call(self.tickets.find_one, {
-            "guild_id": guild.id,
-            "channel_id": interaction.channel_id,
-            "status": "claimed",
-            "session_type": "queue",
-            "claimed_by": actor.id,
-        })
-        support_ticket = False
-        if ticket is None:
-            # The normal Empire ticket panel creates channels with topic
-            # ticket:<owner_id>. Allow staff/testers to record a result there,
-            # but only for the member who opened that exact ticket.
-            channel = interaction.channel
-            topic = channel.topic if isinstance(channel, discord.TextChannel) else None
-            match = re.fullmatch(r"ticket:(\d+)", topic or "")
-            support_owner_id = int(match.group(1)) if match else None
-            if support_owner_id != member.id:
-                await interaction.followup.send(
-                    "This is not your assigned private test session or the selected player's support ticket. "
-                    "Open the player's ticket or use the private test channel created by the queue.",
-                    ephemeral=True,
-                )
-                return
-            support_ticket = True
+        ticket = None
+        if is_owner:
+            # When the owner runs this inside the matching queue-test session,
+            # complete that session too. Otherwise treat it as a direct owner
+            # tier assignment from any channel, without requiring a ticket.
+            possible_ticket = await self.db_call(self.tickets.find_one, {
+                "guild_id": guild.id,
+                "channel_id": interaction.channel_id,
+                "status": "claimed",
+                "session_type": "queue",
+            })
+            if (
+                possible_ticket
+                and int(possible_ticket.get("discord_id", 0)) == member.id
+                and possible_ticket.get("gamemode") == gamemode.value
+            ):
+                ticket = possible_ticket
         else:
-            if ticket.get("gamemode") != gamemode.value or int(ticket.get("discord_id", 0)) != member.id:
+            ticket = await self.db_call(self.tickets.find_one, {
+                "guild_id": guild.id,
+                "channel_id": interaction.channel_id,
+                "status": "claimed",
+                "session_type": "queue",
+                "claimed_by": actor.id,
+            })
+
+            if ticket is None:
+                # Standard Empire support tickets have topic ticket:<owner_id>.
+                channel = interaction.channel
+                topic = channel.topic if isinstance(channel, discord.TextChannel) else None
+                match = re.fullmatch(r"ticket:(\d+)", topic or "")
+                support_owner_id = int(match.group(1)) if match else None
+                if support_owner_id != member.id:
+                    await interaction.followup.send(
+                        "This is not your assigned private test session or the selected player's support ticket. "
+                        "Open the player's ticket or use the private test channel created by the queue.",
+                        ephemeral=True,
+                    )
+                    return
+            elif (
+                ticket.get("gamemode") != gamemode.value
+                or int(ticket.get("discord_id", 0)) != member.id
+            ):
                 await interaction.followup.send(
                     "The selected player and gamemode must match this private test session.",
                     ephemeral=True,
@@ -3907,8 +3950,9 @@ class PvPClubTiersCog(commands.Cog):
                 gamemode.value,
                 tier.value,
                 actor,
-                "test",
+                "test" if ticket else "owner",
                 ticket.get("username") if ticket else None,
+                reason="Assigned directly by the server owner" if is_owner and not ticket else None,
             )
         except Exception:
             log.exception("Could not save /set-tier for %s in %s", member.id, gamemode.value)
@@ -3935,7 +3979,6 @@ class PvPClubTiersCog(commands.Cog):
             ephemeral=True,
         )
 
-        # Keep post-response housekeeping small and scoped to the affected mode.
         if ticket:
             try:
                 await self.refill_open_queues_from_signups(
@@ -4178,7 +4221,7 @@ class PvPClubTiersCog(commands.Cog):
 
     @app_commands.command(name="tier-adjust", description="Staff: adjust a player's tier with an audit reason.")
     @app_commands.guild_only()
-    @app_commands.checks.has_permissions(manage_guild=True)
+    @app_commands.check(owner_or_manager_interaction)
     @app_commands.choices(gamemode=MODE_OPTIONS, tier=TIER_OPTIONS)
     async def tier_adjust(self, interaction, member: discord.Member,
                           gamemode: app_commands.Choice[str], tier: app_commands.Choice[str],
@@ -4205,7 +4248,7 @@ class PvPClubTiersCog(commands.Cog):
 
     @app_commands.command(name="tier-recalculate", description="Repair a player's total points and shared tier role.")
     @app_commands.guild_only()
-    @app_commands.checks.has_permissions(manage_guild=True)
+    @app_commands.check(owner_or_manager_interaction)
     async def tier_recalculate(self, interaction, member: discord.Member):
         if not await self.require_db(interaction):
             return
@@ -4317,7 +4360,7 @@ class PvPClubTiersCog(commands.Cog):
 
     @app_commands.command(name="tierban", description="Block a member from requesting PvPClubTiers tests.")
     @app_commands.guild_only()
-    @app_commands.checks.has_permissions(manage_guild=True)
+    @app_commands.check(owner_or_manager_interaction)
     async def tierban(self, interaction, member: discord.Member, reason: str = "No reason supplied"):
         if not await self.require_db(interaction):
             return
@@ -4331,7 +4374,7 @@ class PvPClubTiersCog(commands.Cog):
 
     @app_commands.command(name="tierunban", description="Allow a member to request PvPClubTiers tests again.")
     @app_commands.guild_only()
-    @app_commands.checks.has_permissions(manage_guild=True)
+    @app_commands.check(owner_or_manager_interaction)
     async def tierunban(self, interaction, member: discord.Member):
         if not await self.require_db(interaction):
             return
@@ -5044,7 +5087,7 @@ class PvPClubTiersCog(commands.Cog):
 
     @app_commands.command(name="duel-disputes", description="Staff: list matchmaking duels with conflicting results.")
     @app_commands.guild_only()
-    @app_commands.checks.has_permissions(manage_guild=True)
+    @app_commands.check(owner_or_manager_interaction)
     async def duel_disputes(self, interaction: discord.Interaction):
         if not await self.require_db(interaction):
             return
@@ -5073,7 +5116,7 @@ class PvPClubTiersCog(commands.Cog):
 
     @app_commands.command(name="duel-review", description="Staff: resolve a disputed duel and select the verified winner.")
     @app_commands.guild_only()
-    @app_commands.checks.has_permissions(manage_guild=True)
+    @app_commands.check(owner_or_manager_interaction)
     async def duel_review(self, interaction: discord.Interaction, duel_id: str,
                           winner: discord.Member, reason: str):
         if not await self.require_db(interaction):
@@ -5319,7 +5362,7 @@ class PvPClubTiersCog(commands.Cog):
 
     @commands.command(name="triviasetup")
     @commands.guild_only()
-    @commands.has_guild_permissions(manage_guild=True)
+    @commands.check(owner_or_manager_context)
     async def triviasetup(self, ctx):
         if self.db is None:
             await ctx.reply("Add MONGO_URI to Render Environment and restart the bot first.")
@@ -5340,7 +5383,7 @@ class PvPClubTiersCog(commands.Cog):
 
     @commands.command(name="triviastop")
     @commands.guild_only()
-    @commands.has_guild_permissions(manage_guild=True)
+    @commands.check(owner_or_manager_context)
     async def triviastop(self, ctx):
         if self.db is None:
             await ctx.reply("MongoDB is not connected.")
