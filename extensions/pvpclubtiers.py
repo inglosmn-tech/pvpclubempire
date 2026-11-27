@@ -3485,10 +3485,7 @@ class PvPClubTiersCog(commands.Cog):
                 or actor.id == ticket.get("claimed_by")
                 or (
                     isinstance(actor, discord.Member)
-                    and (
-                        actor.guild_permissions.manage_guild
-                        or actor.guild_permissions.administrator
-                    )
+                    and guild_owner_or_manager(actor)
                 )
             )
         else:
