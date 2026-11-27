@@ -154,7 +154,7 @@ def safe_player(player: dict) -> dict:
     }
     total_points = total_tier_points(tiers)
     return {
-        "discordId": str(player.get("discord_id", "")),
+        "discordId": str(player.get("discord_id") or player.get("discordId") or ""),
         "ign": player.get("username") or "Unknown",
         "username": player.get("username") or "Unknown",
         "region": "EU",
@@ -1305,8 +1305,8 @@ class PvPClubTiersCog(commands.Cog):
         embed.set_footer(text="PvPClubTiers • Overall points and gamemode top 3 • Updates automatically")
         return embed
 
-    async def ensure_leaderboard_panel(self, guild: discord.Guild):
-        config = await self.setting(guild.id)
+    async def ensure_leaderboard_panel(self, guild: discord.Guild, *, config: dict | None = None):
+        config = config if config is not None else await self.setting(guild.id)
         channel_id = config.get("leaderboard_channel_id")
         channel = guild.get_channel(int(channel_id)) if channel_id else None
         if not isinstance(channel, discord.TextChannel):
@@ -3522,8 +3522,8 @@ class PvPClubTiersCog(commands.Cog):
         except discord.HTTPException:
             log.exception("Could not delete closed PvPClubTiers test channel %s", interaction.channel_id)
 
-    async def sync_best_role(self, member, player):
-        config = await self.setting(member.guild.id)
+    async def sync_best_role(self, member, player, *, config: dict | None = None):
+        config = config if config is not None else await self.setting(member.guild.id)
         role_map = config.get("tier_roles", {})
         tier, mode = best_tier(player.get("tiers", {}))
         owned = []
@@ -3539,6 +3539,12 @@ class PvPClubTiersCog(commands.Cog):
         if desired and desired not in member.roles:
             await member.add_roles(desired, reason=f"PvPClubTiers best tier: {tier} in {mode}")
 
+    async def refresh_leaderboard_safely(self, guild: discord.Guild):
+        try:
+            await self.ensure_leaderboard_panel(guild)
+        except Exception:
+            log.exception("Could not refresh the PvPClubTiers leaderboard in guild %s", guild.id)
+
     async def save_tier(self, guild, member, gamemode, new_tier, tester, source, username=None, reason=None):
         player = await self.get_or_create_player(guild.id, member, username)
         old_tier = (player.get("tiers") or {}).get(gamemode)
@@ -3551,49 +3557,115 @@ class PvPClubTiersCog(commands.Cog):
         tiers[gamemode] = new_tier
         now = datetime.now(timezone.utc)
         display_name = username or player.get("username")
-        await self.db_call(self.players.update_one, {"guild_id": guild.id, "discord_id": member.id},
-            {"$set": {"tiers": tiers, "total_points": total_tier_points(tiers),
-                      "cooldowns": {}, "updated_at": now,
-                      "username": display_name, "username_lc": display_name.casefold()}})
-        await self.db_call(self.history.insert_one, {"guild_id": guild.id, "discord_id": member.id,
-            "username": display_name, "gamemode": gamemode, "old_tier": old_tier or "Unranked",
-            "new_tier": new_tier, "tester_id": tester.id, "source": source,
-            "reason": (reason or "")[:300], "created_at": now})
-        await self.db_call(self.activity.insert_one, {"guild_id": guild.id, "kind": "tier_change",
-            "discord_id": member.id, "username": display_name, "gamemode": gamemode,
-            "old_tier": old_tier or "Unranked", "new_tier": new_tier,
-            "source": source, "reason": (reason or "")[:300], "created_at": now})
+        await self.db_call(
+            self.players.update_one,
+            {"guild_id": guild.id, "discord_id": member.id},
+            {"$set": {
+                "tiers": tiers,
+                "total_points": total_tier_points(tiers),
+                "cooldowns": {},
+                "updated_at": now,
+                "username": display_name,
+                "username_lc": display_name.casefold(),
+            }},
+        )
+
+        # These writes are independent after the profile has been saved. Run them
+        # together instead of paying one round trip after another.
+        writes = [
+            self.db_call(
+                self.history.insert_one,
+                {
+                    "guild_id": guild.id,
+                    "discord_id": member.id,
+                    "username": display_name,
+                    "gamemode": gamemode,
+                    "old_tier": old_tier or "Unranked",
+                    "new_tier": new_tier,
+                    "tester_id": tester.id,
+                    "source": source,
+                    "reason": (reason or "")[:300],
+                    "created_at": now,
+                },
+            ),
+            self.db_call(
+                self.activity.insert_one,
+                {
+                    "guild_id": guild.id,
+                    "kind": "tier_change",
+                    "discord_id": member.id,
+                    "username": display_name,
+                    "gamemode": gamemode,
+                    "old_tier": old_tier or "Unranked",
+                    "new_tier": new_tier,
+                    "source": source,
+                    "reason": (reason or "")[:300],
+                    "created_at": now,
+                },
+            ),
+        ]
         if source == "test":
-            await self.db_call(self.tester_stats.update_one, {"guild_id": guild.id, "tester_id": tester.id},
-                {"$inc": {"tests_completed": 1}, "$set": {"tester_name": tester.display_name, "updated_at": now}}, upsert=True)
-        updated = await self.get_player(guild.id, member.id)
+            writes.append(self.db_call(
+                self.tester_stats.update_one,
+                {"guild_id": guild.id, "tester_id": tester.id},
+                {
+                    "$inc": {"tests_completed": 1},
+                    "$set": {"tester_name": tester.display_name, "updated_at": now},
+                },
+                upsert=True,
+            ))
+        write_results = await asyncio.gather(*writes, return_exceptions=True)
+        for result in write_results:
+            if isinstance(result, Exception):
+                log.error("Tier profile saved, but a history/activity/stat write failed", exc_info=result)
+
+        # Build the updated profile in memory; no second player lookup is needed.
+        updated = {
+            **player,
+            "tiers": tiers,
+            "total_points": total_tier_points(tiers),
+            "username": display_name,
+            "username_lc": display_name.casefold(),
+        }
         try:
-            await self.sync_best_role(member, updated)
-        except (discord.Forbidden, discord.HTTPException):
+            config = await self.setting(guild.id)
+        except Exception:
+            log.exception("Tier saved, but guild settings could not be loaded for follow-up updates")
+            config = {}
+
+        try:
+            await self.sync_best_role(member, updated, config=config)
+        except Exception:
             log.exception("Tier was saved, but the best-tier role could not be synced for %s", member.id)
+
         best, best_mode = best_tier(tiers)
-        msg = (f"{member.mention} ({display_name}) received **{new_tier}** in **{gamemode}**.\n"
-               f"Previous: **{old_tier or 'Unranked'}**\nOverall role: **{best or 'Unranked'}**"
-               + (f" ({best_mode})" if best_mode else ""))
+        msg = (
+            f"{member.mention} ({display_name}) received **{new_tier}** in **{gamemode}**.\n"
+            f"Previous: **{old_tier or 'Unranked'}**\nOverall role: **{best or 'Unranked'}**"
+            + (f" ({best_mode})" if best_mode else "")
+        )
         embed = discord.Embed(title="🏆 PvPClubTiers result", description=msg, colour=COLOURS[new_tier])
         embed.set_footer(text=f"Recorded by {tester.display_name} • mcpvp.club")
-        config = await self.setting(guild.id)
-        for key in ("results_channel_id", "activity_channel_id"):
-            channel_id = config.get(key)
+
+        async def publish(channel_key: str):
+            channel_id = config.get(channel_key)
             channel = guild.get_channel(int(channel_id)) if channel_id else None
             if channel:
                 try:
-                    await channel.send(
-                        embed=embed,
-                        allowed_mentions=discord.AllowedMentions.none(),
-                    )
+                    await channel.send(embed=embed, allowed_mentions=discord.AllowedMentions.none())
                 except discord.HTTPException:
-                    log.exception("Tier was saved, but result announcement failed in channel %s", channel.id)
+                    log.exception("Tier saved, but result announcement failed in channel %s", channel.id)
+
+        await asyncio.gather(
+            publish("results_channel_id"),
+            publish("activity_channel_id"),
+        )
+
+        # Leaderboard generation is a presentation update, not part of saving a
+        # tier. Run it after the command has returned so slow message edits cannot
+        # make /set-tier appear stuck.
         if config.get("leaderboard_channel_id"):
-            try:
-                await self.ensure_leaderboard_panel(guild)
-            except Exception:
-                log.exception("Tier was saved, but leaderboard refresh failed in guild %s", guild.id)
+            asyncio.create_task(self.refresh_leaderboard_safely(guild))
         return old_tier, best, best_mode
 
     @commands.command(name="settier")
