@@ -1539,6 +1539,12 @@ async def raid_setup(interaction, verification_channel: discord.TextChannel, thr
         await interaction.response.send_message("Only the actual server owner can configure Raid Protection.", ephemeral=True)
         return
     perms = verification_channel.permissions_for(interaction.guild.me)
+    if verification_channel.is_nsfw():
+        await interaction.response.send_message("Use a normal, non-NSFW verification channel so every new member can access the challenge.", ephemeral=True)
+        return
+    if kick_after_minutes and not interaction.guild.me.guild_permissions.kick_members:
+        await interaction.response.send_message("I need Kick Members to enable the optional kick-after-expiry setting.", ephemeral=True)
+        return
     if not interaction.guild.me.guild_permissions.manage_roles or not perms.view_channel or not perms.send_messages or not perms.embed_links:
         await interaction.response.send_message("I need Manage Roles and View Channel, Send Messages and Embed Links in the verification channel.", ephemeral=True)
         return
