@@ -520,6 +520,9 @@ class CommunityCog(commands.Cog):
 
     @commands.Cog.listener()
     async def on_member_remove(self, member: discord.Member):
+        security = self.bot.get_cog("SecurityCog")
+        if security:
+            await security.handle_member_leave(member)
         await self._log(member.guild, "Member left", f"{member} (`{member.id}`) left the server.", member)
         await self._sync_meowking(member.guild)
 
