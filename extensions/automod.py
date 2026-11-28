@@ -317,12 +317,14 @@ class AutoModEngine:
                 log.info("Skipping inaccessible or invalid Discord image URL during moderation")
         return result[:3]
 
-    async def _ai_check(self, message: discord.Message) -> tuple[str, str] | None:
+    async def _ai_check(self, message: discord.Message, *, nsfw_only: bool = False) -> tuple[str, str] | None:
         api_key = __import__("os").getenv("OPENAI_API_KEY")
         if not api_key or not self.bot.session or self.bot.session.closed:
             return None
         config = self._config(message.guild.id)
         nsfw_enabled = bool(config.get("nsfw_enabled", False))
+        if nsfw_only and not nsfw_enabled:
+            return None
         text = (message.content or "").strip()
         images = await self._moderation_image_inputs(message) if nsfw_enabled else []
         modules = config.get("modules", {}) if isinstance(config.get("modules", {}), dict) else {}
@@ -391,7 +393,7 @@ class AutoModEngine:
                 source = "image" if "image" in sexual_types else "text"
                 return "normal", "Explicit sexual content detected in " + source
 
-        if not ai_enabled:
+        if nsfw_only or not ai_enabled:
             return None
         thresholds = {
             "hate": 0.90,
@@ -734,8 +736,14 @@ class AutoModEngine:
             if str(channel_id).isdigit()
         }
         if message.channel.id in spam_channels:
-            # Normal AutoMod is deliberately skipped in this channel. The
-            # anti-macro detector runs even if server-wide AutoMod is disabled.
+            # Keep the intended spam-channel exemption for ordinary AutoMod,
+            # but explicit-content filtering remains active when the owner has
+            # explicitly enabled it. Anti-macro protection always remains on.
+            if config.get("nsfw_enabled") and not self._is_immune(message, config):
+                nsfw_result = await self._ai_check(message, nsfw_only=True)
+                if nsfw_result:
+                    await self._punish(message, nsfw_result[0], nsfw_result[1])
+                    return True
             return await self._check_spam_channel_macro(message, config)
 
         enabled = self.bot.store.data.get("automod_settings", {}).get(str(guild.id), True)
