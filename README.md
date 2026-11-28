@@ -100,7 +100,8 @@ Give the bot the permissions needed for the features you enable: Manage Roles, M
 
 - `/tier` — official MCTiers player lookup. The old `/mctiers` command is not registered.
 - `/ign`, `/tiers`, `/profile`, `/tier-leaderboard`, `/tier-rank`, `/search`, `/compare`, `/history`, `/recent` — PvPClubTiers player commands. `/tier-leaderboard` shows the overall table and each gamemode's top three.
-- `/set-tier` — record the result in the private test session assigned to you. `/close` closes that session. Only the queued player, the tester who started that session, and the bot can view the channel; Discord administrators can always bypass channel visibility.
+- `/website` — post the PvPClub Empire tier-list website URL in the current channel.
+- `/set-tier` — record the result in a private test session; the server owner can also set any member's tier from any channel. `/close` closes the session. Only the queued player, assigned tester and bot can view a private test channel; the server owner/staff can manage PvPClubTiers sessions.
 - `/testerstats`, `/testerboard`, `/tierban`, `/tierunban`, `/tier-adjust`, `/tier-recalculate`, `/tier-stats`, `/tier-cooldowns` — PvPClubTiers staff and tier administration.
 - `/duel`, `/duel-score`, `/duel-cancel`, `/elo`, `/elo-leaderboard` — competitive duels with ELO ratings and win/loss tracking.
 - `/trivia-leaderboard` — trivia points leaderboard.
