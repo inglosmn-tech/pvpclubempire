@@ -326,38 +326,40 @@ class SecurityCog(commands.Cog):
         pool = self.pool()
         if pool is None:
             return False
-        rows = await pool.fetch(
-            "SELECT channel_id,permissions FROM pvpclub_quarantine_overwrites WHERE guild_id=$1 AND member_id=$2 AND scope=$3",
-            guild.id, member.id, scope,
-        )
-        try:
-            for row in rows:
-                channel = guild.get_channel(int(row["channel_id"]))
-                if channel is None:
-                    continue
-                saved = row["permissions"]
-                if isinstance(saved, str):
-                    saved = json.loads(saved)
-                overwrite = channel.overwrites_for(member)
-                for name, value in saved.items():
-                    if hasattr(overwrite, name):
-                        setattr(overwrite, name, value)
-                if any(value is not None for value in saved.values()):
-                    await channel.set_permissions(member, overwrite=overwrite, reason=f"PVPClub Empire {scope} quarantine lifted")
-                else:
-                    await channel.set_permissions(member, overwrite=None, reason=f"PVPClub Empire {scope} quarantine lifted")
-            await pool.execute(
-                "DELETE FROM pvpclub_active_quarantines WHERE guild_id=$1 AND member_id=$2 AND scope=$3",
+        lock = self.locks.setdefault((guild.id, member.id, scope), asyncio.Lock())
+        async with lock:
+            rows = await pool.fetch(
+                "SELECT channel_id,permissions FROM pvpclub_quarantine_overwrites WHERE guild_id=$1 AND member_id=$2 AND scope=$3",
                 guild.id, member.id, scope,
             )
-            await pool.execute(
-                "DELETE FROM pvpclub_quarantine_overwrites WHERE guild_id=$1 AND member_id=$2 AND scope=$3",
-                guild.id, member.id, scope,
-            )
-            return True
-        except Exception:
-            log.exception("Failed to restore quarantine for %s in guild %s", member.id, guild.id)
-            return False
+            try:
+                for row in rows:
+                    channel = guild.get_channel(int(row["channel_id"]))
+                    if channel is None:
+                        continue
+                    saved = row["permissions"]
+                    if isinstance(saved, str):
+                        saved = json.loads(saved)
+                    overwrite = channel.overwrites_for(member)
+                    for name, value in saved.items():
+                        if hasattr(overwrite, name):
+                            setattr(overwrite, name, value)
+                    if any(value is not None for value in saved.values()):
+                        await channel.set_permissions(member, overwrite=overwrite, reason=f"PVPClub Empire {scope} quarantine lifted")
+                    else:
+                        await channel.set_permissions(member, overwrite=None, reason=f"PVPClub Empire {scope} quarantine lifted")
+                await pool.execute(
+                    "DELETE FROM pvpclub_active_quarantines WHERE guild_id=$1 AND member_id=$2 AND scope=$3",
+                    guild.id, member.id, scope,
+                )
+                await pool.execute(
+                    "DELETE FROM pvpclub_quarantine_overwrites WHERE guild_id=$1 AND member_id=$2 AND scope=$3",
+                    guild.id, member.id, scope,
+                )
+                return True
+            except Exception:
+                log.exception("Failed to restore quarantine for %s in guild %s", member.id, guild.id)
+                return False
 
     async def on_new_channel(self, channel: discord.abc.GuildChannel):
         pool = self.pool()
@@ -683,8 +685,32 @@ class SecurityCog(commands.Cog):
             await self.handle_bot_join(member)
             return False
         guild = member.guild
+        pool = self.pool()
+        # A previous member-specific overwrite may survive a departure if
+        # Discord rejected the cleanup while the user was leaving.
+        if pool is not None:
+            saved_state = await pool.fetchrow(
+                "SELECT status FROM pvpclub_raid_verifications WHERE guild_id=$1 AND member_id=$2",
+                guild.id, member.id,
+            )
+            if saved_state and saved_state["status"] == "verified":
+                active = await pool.fetchval(
+                    "SELECT 1 FROM pvpclub_active_quarantines WHERE guild_id=$1 AND member_id=$2 AND scope='raid'",
+                    guild.id, member.id,
+                )
+                if active and not await self.restore_quarantine(guild, member, "raid"):
+                    await self.owner_alert(guild, "Verified member still quarantined", f"Could not restore previous permissions for {member} ({member.id}) after rejoining.")
+                return False
+            if saved_state and saved_state["status"] == "left":
+                active = await pool.fetchval(
+                    "SELECT 1 FROM pvpclub_active_quarantines WHERE guild_id=$1 AND member_id=$2 AND scope='raid'",
+                    guild.id, member.id,
+                )
+                if active and not await self.restore_quarantine(guild, member, "raid"):
+                    await self.owner_alert(guild, "Quarantine cleanup failed on rejoin", f"Could not restore saved permissions for {member} ({member.id}).")
+
         config = self.raid_config(guild.id)
-        if not config.get("enabled") or self.trusted_member(member) or self.pool() is None:
+        if not config.get("enabled") or self.trusted_member(member) or pool is None:
             return False
         if await self.is_verified(guild.id, member.id):
             return False
