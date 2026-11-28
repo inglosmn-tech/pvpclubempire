@@ -3580,82 +3580,150 @@ class PvPClubTiersCog(commands.Cog):
                 ephemeral=True,
             )
             return
-        await interaction.response.defer(ephemeral=True, thinking=True)
-        ticket = await self.db_call(
-            self.tickets.find_one,
-            {
-                "guild_id": interaction.guild.id,
-                "channel_id": interaction.channel_id,
-                "status": {"$in": ["open", "claimed", "completed"]},
-            },
-        )
-        if not ticket:
-            await interaction.followup.send("This is not an active PvPClubTiers test session.", ephemeral=True)
-            return
-
-        actor = interaction.user
-        if ticket.get("session_type") == "queue":
-            can_close = (
-                actor.id == ticket["discord_id"]
-                or actor.id == ticket.get("claimed_by")
-                or (
-                    isinstance(actor, discord.Member)
-                    and guild_owner_or_manager(actor)
-                )
-            )
-        else:
-            allowed = isinstance(actor, discord.Member) and await self.staff_or_tester(actor, ticket["gamemode"])
-            can_close = actor.id == ticket["discord_id"] or allowed
-        if not can_close:
-            await interaction.followup.send(
-                "Only the player, the tester assigned to this session, or an administrator can close it.",
+        if interaction.guild is None or interaction.channel is None:
+            await interaction.response.send_message(
+                "This session can only be closed inside the server.",
                 ephemeral=True,
             )
             return
 
-        await self.db_call(
-            self.tickets.update_one,
-            {"ticket_id": ticket["ticket_id"]},
-            {"$set": {
-                "status": "closed",
-                "closed_at": datetime.now(timezone.utc),
-                "closed_by": actor.id,
-            }},
-        )
-        if ticket.get("session_type") == "queue" and ticket.get("status") != "completed":
-            await self.db_call(
-                self.test_queue_entries.update_one,
-                {"queue_id": ticket.get("queue_id"), "status": "testing"},
-                {"$set": {"status": "closed", "closed_at": datetime.now(timezone.utc)}},
-            )
-
-        if ticket.get("session_type") == "queue":
-            await self.refill_open_queues_from_signups(
-                interaction.guild,
-                exclude_modes={ticket.get("gamemode")},
-            )
-            await self.refresh_test_queue_panel(interaction.guild)
-
-        await interaction.followup.send(
-            "Test session closed. This private channel will be deleted in five seconds.",
+        # Confirm the click immediately. Queue refilling, logging and channel
+        # deletion are background cleanup and must not hold the Discord response.
+        await interaction.response.send_message(
+            "⏳ Closing this test session…",
             ephemeral=True,
         )
-        config = await self.setting(interaction.guild.id)
-        log_channel = interaction.guild.get_channel(int(config.get("logs_channel_id", 0) or 0))
-        if log_channel:
+        guild = interaction.guild
+        channel = interaction.channel
+        actor = interaction.user
+
+        try:
+            ticket = await self.db_call(
+                self.tickets.find_one,
+                {
+                    "guild_id": guild.id,
+                    "channel_id": interaction.channel_id,
+                    "status": {"$in": ["open", "claimed", "completed"]},
+                },
+            )
+            if not ticket:
+                await interaction.edit_original_response(
+                    content="This is not an active PvPClubTiers test session."
+                )
+                return
+
+            if ticket.get("session_type") == "queue":
+                can_close = (
+                    actor.id == ticket["discord_id"]
+                    or actor.id == ticket.get("claimed_by")
+                    or (
+                        isinstance(actor, discord.Member)
+                        and guild_owner_or_manager(actor)
+                    )
+                )
+            else:
+                allowed = (
+                    isinstance(actor, discord.Member)
+                    and await self.staff_or_tester(actor, ticket["gamemode"])
+                )
+                can_close = actor.id == ticket["discord_id"] or allowed
+
+            if not can_close:
+                await interaction.edit_original_response(
+                    content="Only the player, assigned tester, or server owner/staff can close this session."
+                )
+                return
+
+            # Conditional update prevents two people from closing the same session twice.
+            close_result = await self.db_call(
+                self.tickets.update_one,
+                {
+                    "ticket_id": ticket["ticket_id"],
+                    "status": ticket.get("status"),
+                },
+                {"$set": {
+                    "status": "closed",
+                    "closed_at": datetime.now(timezone.utc),
+                    "closed_by": actor.id,
+                }},
+            )
+            if not close_result.modified_count:
+                await interaction.edit_original_response(
+                    content="This test session was already closed."
+                )
+                return
+
+            if ticket.get("session_type") == "queue" and ticket.get("status") != "completed":
+                await self.db_call(
+                    self.test_queue_entries.update_one,
+                    {"queue_id": ticket.get("queue_id"), "status": "testing"},
+                    {"$set": {
+                        "status": "closed",
+                        "closed_at": datetime.now(timezone.utc),
+                    }},
+                )
+
+            await interaction.edit_original_response(
+                content="✅ Test session closed. This private channel will be deleted in a few seconds."
+            )
+
+            # Do all slow secondary operations after the interaction is complete.
+            asyncio.create_task(
+                self.finish_closed_test_session(guild, channel, ticket, actor)
+            )
+
+        except Exception:
+            log.exception(
+                "Could not close test session in channel %s (guild %s)",
+                interaction.channel_id,
+                guild.id,
+            )
             try:
-                await log_channel.send(
-                    f"Closed PvPClubTiers test {ticket['ticket_id']} for "
-                    f"{ticket['username']} ({ticket['gamemode']}).",
-                    allowed_mentions=discord.AllowedMentions.none(),
+                await interaction.edit_original_response(
+                    content="❌ I couldn't close this test session. The error has been logged; please contact the owner."
                 )
             except discord.HTTPException:
-                log.exception("Could not log closed PvPClubTiers test %s", ticket["ticket_id"])
+                pass
+
+    async def finish_closed_test_session(
+        self,
+        guild: discord.Guild,
+        channel: discord.abc.GuildChannel,
+        ticket: dict,
+        actor: discord.abc.User,
+    ):
+        """Run slow queue maintenance and private-channel deletion after closing."""
+        if ticket.get("session_type") == "queue":
+            try:
+                await self.refill_open_queues_from_signups(
+                    guild,
+                    exclude_modes={ticket.get("gamemode")},
+                )
+                await self.refresh_test_queue_mode_panel(guild, ticket.get("gamemode"))
+            except Exception:
+                log.exception("Test session closed, but queue refill/refresh failed for %s", ticket.get("ticket_id"))
+
+        try:
+            config = await self.setting(guild.id)
+            channel_id = config.get("logs_channel_id")
+            log_channel = guild.get_channel(int(channel_id)) if channel_id else None
+            if log_channel:
+                await log_channel.send(
+                    f"Closed PvPClubTiers test {ticket['ticket_id']} for "
+                    f"{ticket.get('username', 'Unknown')} ({ticket.get('gamemode', 'Unknown')}). "
+                    f"Closed by {actor.mention}.",
+                    allowed_mentions=discord.AllowedMentions.none(),
+                )
+        except Exception:
+            log.exception("Could not log closed PvPClubTiers test %s", ticket.get("ticket_id"))
+
         await asyncio.sleep(5)
         try:
-            await interaction.channel.delete(reason=f"PvPClubTiers session closed by {actor}")
+            await channel.delete(reason=f"PvPClubTiers session closed by {actor}")
+        except discord.NotFound:
+            pass
         except discord.HTTPException:
-            log.exception("Could not delete closed PvPClubTiers test channel %s", interaction.channel_id)
+            log.exception("Could not delete closed test channel %s", channel.id)
 
     async def sync_best_role(self, member, player, *, config: dict | None = None):
         config = config if config is not None else await self.setting(member.guild.id)
@@ -4218,6 +4286,24 @@ class PvPClubTiersCog(commands.Cog):
                 "Something went wrong while setting the tier. Check the Render logs.",
                 ephemeral=True,
             )
+
+    @app_commands.command(
+        name="website",
+        description="Show the PvPClub Empire tier-list website.",
+    )
+    @app_commands.guild_only()
+    async def website(self, interaction: discord.Interaction):
+        url = self.website_url()
+        if not url:
+            await interaction.response.send_message(
+                "The tier-list website URL is not configured. Set PVPCLUBTIERS_WEBSITE_URL in Render Environment.",
+                ephemeral=True,
+            )
+            return
+        await interaction.response.send_message(
+            f"🌐 **PvPClub Empire tier-list website**\n{url}",
+            allowed_mentions=discord.AllowedMentions.none(),
+        )
 
     @app_commands.command(
         name="set-tier",
