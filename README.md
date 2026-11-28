@@ -31,7 +31,7 @@ Keep the `extensions/` folder alongside `main.py`; the bot loads those cogs at s
 |---|---|
 | `DATABASE_STORAGE_LIMIT_MB` | Set this to the real database quota shown in your Neon plan, in MiB. Enables 80% and 95% usage warnings and percentage display in `?storage`. Do not guess this value. |
 | `PVPCLUBTIERS_WEBSITE_URL` | Public tier website URL for the Discord panels; defaults to Render's `RENDER_EXTERNAL_URL`. |
-| `OPENAI_API_KEY` | Enables optional asynchronous OpenAI Moderation checks in AutoMod. Without it, fast local checks still run. |
+| `OPENAI_API_KEY` | Enables optional asynchronous OpenAI Moderation checks in AutoMod, including configured NSFW text and image filtering. Without it, fast local checks still run. |
 | `ALLOW_EPHEMERAL_STORAGE=1` | Allows JSON-only storage for temporary local development. Do not use this for a production Render deployment. |
 | `DATA_FILE` | Local JSON snapshot path; defaults to `bot_data.json`. |
 
@@ -56,10 +56,11 @@ Lifetime meow counts, level totals, streak bests and birthdays are intentionally
 
 Enable these privileged gateway intents:
 
-- **Server Members Intent** (welcome messages, autoroles, birthdays and member moderation events)
+- **Server Members Intent** (welcome messages, autoroles, birthdays, bot approval and raid verification)
 - **Message Content Intent** (prefix commands, meow counting and message AutoMod)
+- **Auto Moderation Configuration** and **Auto Moderation Execution** intents (native Discord AutoMod synchronization and event delivery)
 
-Give the bot the permissions needed for the features you enable: Manage Roles, Manage Channels, Manage Messages, Manage Webhooks, Moderate Members, Ban Members, Kick Members, View Channels, Send Messages, Embed Links and Read Message History. Anti-macro checks and spam escalation need Manage Messages and Moderate Members. Keep the bot's highest role above every role it must assign or moderate.
+Give the bot the permissions needed for the features you enable: Manage Roles, Manage Server, Manage Channels, Manage Messages, Manage Webhooks, Moderate Members, Kick Members, View Audit Log (for bot inviter lookup), View Channels, Send Messages, Embed Links and Read Message History. Anti-macro checks and spam escalation need Manage Messages and Moderate Members. Bot approval and raid quarantine need Manage Roles; bot approval rejection and optional unverified-member kicks need Kick Members. Native AutoMod synchronization requires Manage Server. Keep the bot's highest role above every role it must assign or moderate.
 
 ## First-time setup
 
@@ -95,6 +96,17 @@ Give the bot the permissions needed for the features you enable: Manage Roles, M
 - `?v1` — rename categories and channels into the decorative `emoji | CATEGORY` and `『emoji』 channel-name` styles.
 - `?catinvasion` — enable random cat events in the current channel; first exact `MEOW` within 60 seconds wins 25 XP. Events run every 3–6 hours between 10:00 and 22:00 (Amsterdam time).
 - `?catinvasionstop` — disable Cat Invasion.
+
+## Security and AutoMod setup
+
+- `?botapprovalsetup #bot-approval` — server-owner-only setup. Newly joining bots are restricted to the review channel until the actual server owner approves or rejects them. Existing bots are grandfathered when setup is first run.
+- `/raid setup` — server-owner-only setup for the verification channel, rolling join threshold (default 10 humans / 10 seconds), protection window and optional kick delay after a failed/expired challenge. Use `/raid enable`, `/raid disable` and `/raid status` to control or inspect it. Quarantined humans can only view the verification panel channel until they solve their personal arithmetic challenge.
+- `/automod nsfw setup` — server-owner-only setup for the moderation log and sexual/minors text confidence thresholds; requires `OPENAI_API_KEY`. Use `/automod nsfw on`, `/automod nsfw off` and `/automod nsfw status` to manage or inspect explicit text and supported image filtering.
+- `/automod sync` and `/automod native-status` — server-owner-only synchronization and inspection of PVPClub Empire-owned native Discord AutoMod rules. Manually created rules are left untouched.
+- `/temporaryrole grant` — give a member a role for `10m`, `2h`, `1d`, `7d` or up to `30d`; re-granting extends the existing temporary expiry. Use `/temporaryrole remove` and `/temporaryrole list` to manage active assignments. Requires Manage Roles, PostgreSQL and a bot role above both the target member and the assigned role.
+
+
+**Important NSFW limitation:** OpenAI's standard moderation endpoint's `sexual/minors` category applies to text only. The image path checks the supported sexual-image category; it does not classify suspected CSAM images. Do not upload suspected CSAM to the standard moderation endpoint. If OpenAI moderation is unavailable or rate-limited, AI filtering fails open and writes an operational warning; local AutoMod rules continue to run.
 
 ## Useful commands
 
