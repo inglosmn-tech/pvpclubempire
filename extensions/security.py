@@ -165,6 +165,7 @@ class SecurityCog(commands.Cog):
         self.bot = bot
         self.join_windows: dict[int, deque[tuple[float, int]]] = defaultdict(deque)
         self.locks: dict[tuple[int, int, str], asyncio.Lock] = {}
+        self.review_locks: dict[tuple[int, int], asyncio.Lock] = {}
 
     def pool(self):
         return getattr(self.bot.store, "pool", None)
@@ -431,10 +432,115 @@ class SecurityCog(commands.Cog):
             content=f"✅ Bot approval is configured in {channel.mention}. {len(existing_bots)} existing bots were grandfathered in."
         )
 
+    async def ensure_pending_bot(
+        self, guild: discord.Guild, member: discord.Member,
+        channel: discord.TextChannel | None, review_message_id: int | None,
+        invited_by_id: int | None,
+    ) -> bool:
+        """Re-enforce a pending bot's restrictions and ensure its owner review panel exists."""
+        pool = self.pool()
+        if pool is None:
+            return False
+        review_lock = self.review_locks.setdefault((guild.id, member.id), asyncio.Lock())
+        async with review_lock:
+            if not isinstance(channel, discord.TextChannel):
+                await self.owner_alert(
+                    guild, "Bot approval channel unavailable",
+                    f"{member} ({member.id}) is pending approval but the configured review channel is missing. I am attempting to remove the bot.",
+                )
+                try:
+                    await member.kick(reason="PVPClub Empire bot approval channel is unavailable")
+                    await pool.execute(
+                        "UPDATE pvpclub_bot_approvals SET status='quarantine_failed',decided_at=NOW() WHERE guild_id=$1 AND bot_id=$2 AND status='pending'",
+                        guild.id, member.id,
+                    )
+                    await self.clear_quarantine_backups(guild.id, member.id, "bot")
+                except discord.HTTPException:
+                    log.exception("Could not remove bot %s after approval channel became unavailable", member.id)
+                return False
+
+            bypass_id = channel.id
+            missing_restrictions = False
+            for target_channel in guild.channels:
+                overwrite = target_channel.overwrites_for(member)
+                if target_channel.id == bypass_id:
+                    if overwrite.view_channel is not True or overwrite.send_messages is not False:
+                        missing_restrictions = True
+                        break
+                elif overwrite.view_channel is not False:
+                    missing_restrictions = True
+                    break
+
+            active = await pool.fetchval(
+                "SELECT 1 FROM pvpclub_active_quarantines WHERE guild_id=$1 AND member_id=$2 AND scope='bot'",
+                guild.id, member.id,
+            )
+            if not active or missing_restrictions:
+                if member.guild_permissions.administrator or not await self.quarantine(guild, member, "bot", bypass_id):
+                    await self.owner_alert(
+                        guild, "BOT QUARANTINE FAILED",
+                        f"Could not safely quarantine {member} ({member.id}). I am attempting to remove the bot; check Manage Roles, Kick Members and role hierarchy.",
+                    )
+                    try:
+                        await member.kick(reason="PVPClub Empire could not enforce bot approval quarantine")
+                        await pool.execute(
+                            "UPDATE pvpclub_bot_approvals SET status='quarantine_failed',decided_at=NOW() WHERE guild_id=$1 AND bot_id=$2 AND status='pending'",
+                            guild.id, member.id,
+                        )
+                        await self.clear_quarantine_backups(guild.id, member.id, "bot")
+                    except discord.HTTPException:
+                        log.exception("Could not remove unquarantinable bot %s", member.id)
+                    return False
+
+            if review_message_id:
+                try:
+                    old_message = await channel.fetch_message(int(review_message_id))
+                    self.bot.add_view(BotApprovalView(self, guild.id, member.id), message_id=old_message.id)
+                    return True
+                except discord.NotFound:
+                    log.info("Bot approval message %s was deleted; creating a new review panel.", review_message_id)
+                except discord.Forbidden:
+                    log.exception("Cannot access bot approval review message %s", review_message_id)
+                except discord.HTTPException:
+                    log.exception("Could not fetch bot approval review message %s", review_message_id)
+
+            inviter = guild.get_member(int(invited_by_id)) if invited_by_id else None
+            inviter_text = f"{inviter} ({inviter.id})" if inviter else (
+                f"Discord user ID {invited_by_id}" if invited_by_id else
+                "Unavailable (audit log permission or entry not available)"
+            )
+            e = discord.Embed(
+                title="🤖 Bot approval required",
+                description=f"{member.mention} is quarantined until the server owner decides.",
+                color=0xFFB347,
+            )
+            e.set_thumbnail(url=member.display_avatar.url)
+            e.add_field(name="Bot", value=f"{member} ({member.id})", inline=False)
+            e.add_field(name="Account created", value=member.created_at.strftime("%Y-%m-%d %H:%M UTC"), inline=True)
+            e.add_field(name="Bot account", value="Yes", inline=True)
+            e.add_field(name="Invited by", value=inviter_text, inline=False)
+            e.set_footer(text="Only the actual Discord server owner can approve or reject.")
+            try:
+                # Save the message ID before enabling the buttons so an old panel
+                # cannot approve/reject a newer request for the same bot.
+                message = await channel.send(embed=e)
+                await pool.execute(
+                    "UPDATE pvpclub_bot_approvals SET review_channel_id=$3,review_message_id=$4 WHERE guild_id=$1 AND bot_id=$2 AND status='pending'",
+                    guild.id, member.id, channel.id, message.id,
+                )
+                await message.edit(view=BotApprovalView(self, guild.id, member.id))
+                return True
+            except Exception:
+                log.exception("Could not publish bot approval panel for %s in guild %s", member.id, guild.id)
+                await self.owner_alert(
+                    guild, "Bot approval panel failed",
+                    f"{member} ({member.id}) remains quarantined, but I could not create its review panel in {channel.mention}.",
+                )
+                return False
+
     async def handle_bot_join(self, member: discord.Member):
         guild = member.guild
-        # Bot approval is opt-in. Do not affect existing/new bots until the
-        # actual owner has configured the dedicated review channel.
+        # Bot approval is opt-in. Do not affect bots until the owner configures it.
         configured_channel = self.bot.store.data.get("bot_approval_channels", {}).get(str(guild.id))
         if not configured_channel:
             return
@@ -448,12 +554,10 @@ class SecurityCog(commands.Cog):
             return
 
         row = await pool.fetchrow(
-            "SELECT status,review_message_id FROM pvpclub_bot_approvals WHERE guild_id=$1 AND bot_id=$2",
+            "SELECT status,review_channel_id,review_message_id,invited_by FROM pvpclub_bot_approvals WHERE guild_id=$1 AND bot_id=$2",
             guild.id, member.id,
         )
         if row and row["status"] == "approved":
-            # If a previous process stopped after recording approval but before
-            # restoring the saved overwrites, finish that restoration on rejoin.
             active = await pool.fetchval(
                 "SELECT 1 FROM pvpclub_active_quarantines WHERE guild_id=$1 AND member_id=$2 AND scope='bot'",
                 guild.id, member.id,
@@ -469,65 +573,47 @@ class SecurityCog(commands.Cog):
                 await self.owner_alert(guild, "Rejected bot rejoined", f"Could not kick {member} ({member.id}).")
             return
 
-        channel_id = self.bot.store.data.get("bot_approval_channels", {}).get(str(guild.id))
-        channel = guild.get_channel(int(channel_id)) if channel_id else None
+        channel = guild.get_channel(int(configured_channel))
         if not isinstance(channel, discord.TextChannel):
-            await self.owner_alert(guild, "Bot approval is not configured", f"Unapproved bot {member} ({member.id}) joined. Run ?botapprovalsetup #channel.")
-            try:
-                await member.kick(reason="Bot approval is not configured")
-            except discord.HTTPException:
-                log.exception("Could not kick bot %s while approval was unconfigured", member.id)
-            return
-
-        # Admin bypasses all channel overwrites; do not pretend it is quarantined.
-        if member.guild_permissions.administrator or not await self.quarantine(guild, member, "bot", channel.id):
-            await self.owner_alert(guild, "BOT QUARANTINE FAILED", f"Could not safely quarantine {member} ({member.id}). Attempting fail-closed kick.")
-            try:
-                await member.kick(reason="PVPClub Empire could not safely quarantine this unapproved bot")
-            except discord.HTTPException:
-                log.exception("Could not kick unquarantinable bot %s", member.id)
-            return
-
-        inviter = await self.bot_inviter(guild, member)
-        await pool.execute(
-            """INSERT INTO pvpclub_bot_approvals (guild_id,bot_id,status,review_channel_id,invited_by,joined_at)
-               VALUES ($1,$2,'pending',$3,$4,NOW())
-               ON CONFLICT (guild_id,bot_id) DO UPDATE SET
-               status='pending',review_channel_id=EXCLUDED.review_channel_id,
-               invited_by=EXCLUDED.invited_by,joined_at=NOW()
-               WHERE pvpclub_bot_approvals.status <> 'approved'""",
-            guild.id, member.id, channel.id, inviter.id if inviter else None,
-        )
-        if row and row["status"] == "pending" and row["review_message_id"]:
-            try:
-                old = await channel.fetch_message(int(row["review_message_id"]))
-                self.bot.add_view(BotApprovalView(self, guild.id, member.id), message_id=old.id)
-                return
-            except discord.HTTPException:
-                log.info("Previous review message is unavailable; posting a replacement.")
-        e = discord.Embed(
-            title="🤖 Bot approval required",
-            description=f"{member.mention} is quarantined until the server owner decides.",
-            color=0xFFB347,
-        )
-        e.set_thumbnail(url=member.display_avatar.url)
-        e.add_field(name="Bot", value=f"{member} ({member.id})", inline=False)
-        e.add_field(name="Account created", value=member.created_at.strftime("%Y-%m-%d %H:%M UTC"), inline=True)
-        e.add_field(name="Bot account", value="Yes", inline=True)
-        e.add_field(name="Invited by", value=f"{inviter} ({inviter.id})" if inviter else "Unavailable (audit log permission or entry not available)", inline=False)
-        e.set_footer(text="Only the actual server owner can approve or reject.")
-        try:
-            # Persist the exact review-message ID before enabling its buttons so
-            # stale panels from a previous join can never decide a new request.
-            message = await channel.send(embed=e)
-            await pool.execute(
-                "UPDATE pvpclub_bot_approvals SET review_message_id=$3 WHERE guild_id=$1 AND bot_id=$2 AND status='pending'",
-                guild.id, member.id, message.id,
+            await self.owner_alert(
+                guild, "Bot approval channel missing",
+                f"Unapproved bot {member} ({member.id}) joined, but the configured approval channel is unavailable. I am attempting to remove it.",
             )
-            await message.edit(view=BotApprovalView(self, guild.id, member.id))
-        except discord.HTTPException:
-            log.exception("Could not send approval panel for bot %s", member.id)
-            await self.owner_alert(guild, "Bot approval panel failed", f"{member} ({member.id}) remains quarantined, but I could not post the review message in {channel.mention}.")
+            try:
+                await member.kick(reason="PVPClub Empire bot approval channel is unavailable")
+            except discord.HTTPException:
+                log.exception("Could not kick bot %s without an available approval channel", member.id)
+            return
+
+        # Persist pending state before Discord permission edits. The worker can
+        # complete quarantine and panel creation after any process interruption.
+        was_pending = bool(row and row["status"] == "pending")
+        await pool.execute(
+            """INSERT INTO pvpclub_bot_approvals
+               (guild_id,bot_id,status,review_channel_id,review_message_id,invited_by,joined_at)
+               VALUES ($1,$2,'pending',$3,NULL,NULL,NOW())
+               ON CONFLICT (guild_id,bot_id) DO UPDATE SET
+                 status='pending',review_channel_id=EXCLUDED.review_channel_id,
+                 review_message_id=CASE
+                   WHEN pvpclub_bot_approvals.status='pending'
+                   THEN pvpclub_bot_approvals.review_message_id ELSE NULL END,
+                 invited_by=NULL,joined_at=NOW()
+               WHERE pvpclub_bot_approvals.status <> 'approved'""",
+            guild.id, member.id, channel.id,
+        )
+        inviter = await self.bot_inviter(guild, member)
+        if inviter:
+            await pool.execute(
+                "UPDATE pvpclub_bot_approvals SET invited_by=$3 WHERE guild_id=$1 AND bot_id=$2 AND status='pending'",
+                guild.id, member.id, inviter.id,
+            )
+        pending = await pool.fetchrow(
+            "SELECT review_message_id,invited_by FROM pvpclub_bot_approvals WHERE guild_id=$1 AND bot_id=$2 AND status='pending'",
+            guild.id, member.id,
+        )
+        review_id = int(pending["review_message_id"]) if was_pending and pending and pending["review_message_id"] else None
+        invited_id = int(pending["invited_by"]) if pending and pending["invited_by"] else None
+        await self.ensure_pending_bot(guild, member, channel, review_id, invited_id)
 
     async def decide_bot(self, guild, bot_id: int, approved: bool, actor, review_message_id: int | None):
         pool = self.pool()
@@ -937,17 +1023,51 @@ class SecurityCog(commands.Cog):
                     await self.restore_quarantine(guild, member, "raid")
         except Exception:
             log.exception("Could not recover completed verifications after restart.")
-        # Reconcile bot approval state after a restart. An approved bot with
-        # leftover overwrites is restored; pending bots are kept restricted.
+        # Recover pending bot approvals even if the process stopped before
+        # quarantine or review-panel creation completed.
         try:
-            bot_rows = await pool.fetch(
-                """SELECT q.guild_id,q.member_id,a.status,q.bypass_channel_id
+            pending_bots = await pool.fetch(
+                """SELECT guild_id,bot_id,review_channel_id,review_message_id,invited_by
+                   FROM pvpclub_bot_approvals WHERE status='pending'
+                   ORDER BY joined_at LIMIT 100"""
+            )
+            for row in pending_bots:
+                guild = self.bot.get_guild(int(row["guild_id"]))
+                if guild is None:
+                    continue
+                member = guild.get_member(int(row["bot_id"]))
+                if member is None:
+                    try:
+                        member = await guild.fetch_member(int(row["bot_id"]))
+                    except discord.NotFound:
+                        await pool.execute(
+                            "UPDATE pvpclub_bot_approvals SET status='left' WHERE guild_id=$1 AND bot_id=$2 AND status='pending'",
+                            guild.id, int(row["bot_id"]),
+                        )
+                        await self.clear_quarantine_backups(guild.id, int(row["bot_id"]), "bot")
+                        continue
+                    except discord.HTTPException:
+                        continue
+                review_channel_id = row["review_channel_id"] or self.bot.store.data.get("bot_approval_channels", {}).get(str(guild.id))
+                review_channel = guild.get_channel(int(review_channel_id)) if review_channel_id else None
+                await self.ensure_pending_bot(
+                    guild, member, review_channel,
+                    int(row["review_message_id"]) if row["review_message_id"] else None,
+                    int(row["invited_by"]) if row["invited_by"] else None,
+                )
+        except Exception:
+            log.exception("Could not recover pending bot approval requests.")
+
+        try:
+            terminal_bots = await pool.fetch(
+                """SELECT q.guild_id,q.member_id,a.status
                    FROM pvpclub_active_quarantines q
                    LEFT JOIN pvpclub_bot_approvals a
                      ON a.guild_id=q.guild_id AND a.bot_id=q.member_id
-                   WHERE q.scope='bot' LIMIT 100"""
+                   WHERE q.scope='bot' AND (a.status IS NULL OR a.status IN ('approved','rejected','quarantine_failed'))
+                   LIMIT 100"""
             )
-            for item in bot_rows:
+            for item in terminal_bots:
                 guild = self.bot.get_guild(int(item["guild_id"]))
                 if guild is None:
                     continue
@@ -967,29 +1087,28 @@ class SecurityCog(commands.Cog):
                         continue
                     except discord.HTTPException:
                         continue
-                status = str(item["status"] or "pending")
-                if status == "approved":
+                if item["status"] == "approved":
                     await self.restore_quarantine(guild, member, "bot")
-                elif status == "rejected":
-                    try:
-                        await member.kick(reason="PVPClub Empire recovered a rejected bot after restart")
-                        await pool.execute(
-                            "DELETE FROM pvpclub_active_quarantines WHERE guild_id=$1 AND member_id=$2 AND scope='bot'",
-                            guild.id, member.id,
-                        )
-                        await pool.execute(
-                            "DELETE FROM pvpclub_quarantine_overwrites WHERE guild_id=$1 AND member_id=$2 AND scope='bot'",
-                            guild.id, member.id,
-                        )
-                    except discord.HTTPException:
-                        log.exception("Could not finish rejecting bot %s after restart", member.id)
-                        await self.owner_alert(guild, "Rejected bot still present", f"Could not finish kicking {member} ({member.id}) after restart.")
-                else:
-                    approval_id = self.bot.store.data.get("bot_approval_channels", {}).get(str(guild.id))
-                    if not await self.quarantine(guild, member, "bot", int(approval_id) if approval_id else None):
-                        await self.owner_alert(guild, "Pending bot quarantine recovery failed", f"Could not re-apply quarantine to {member} ({member.id}).")
+                    continue
+                # Rejected/quarantine-failed bots, or an orphan quarantine record
+                # without a matching approval row, must not regain access.
+                try:
+                    await member.kick(reason="PVPClub Empire recovered an unapproved bot after restart")
+                    await pool.execute(
+                        "DELETE FROM pvpclub_active_quarantines WHERE guild_id=$1 AND member_id=$2 AND scope='bot'",
+                        guild.id, member.id,
+                    )
+                    await pool.execute(
+                        "DELETE FROM pvpclub_quarantine_overwrites WHERE guild_id=$1 AND member_id=$2 AND scope='bot'",
+                        guild.id, member.id,
+                    )
+                    if item["status"] is None:
+                        await self.owner_alert(guild, "Orphaned bot quarantine", f"Kicked {member} ({member.id}) because its approval record was missing after a restart.")
+                except discord.HTTPException:
+                    log.exception("Could not remove unapproved bot %s after restart", member.id)
+                    await self.owner_alert(guild, "Unapproved bot still present", f"Could not remove {member} ({member.id}) after restart. Check Kick Members and role hierarchy.")
         except Exception:
-            log.exception("Could not reconcile pending bot approval quarantines.")
+            log.exception("Could not reconcile terminal bot approval states.")
 
         # Verification panels whose database record exists but panel send was
         # interrupted are recreated after a restart.
