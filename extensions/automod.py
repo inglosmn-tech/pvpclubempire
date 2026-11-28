@@ -519,6 +519,26 @@ class AutoModEngine:
         member = message.author
         if guild is None or not isinstance(member, discord.Member):
             return
+        # Discord can deliver multiple message events before its member-update
+        # event reflects a newly-applied timeout. Never escalate or extend an
+        # already-active timeout; just remove any late-arriving spam message.
+        existing_timeout = getattr(member, "timed_out_until", None)
+        if existing_timeout is not None:
+            if existing_timeout.tzinfo is None:
+                existing_timeout = existing_timeout.replace(tzinfo=timezone.utc)
+            if existing_timeout > discord.utils.utcnow():
+                try:
+                    await message.delete()
+                except (discord.Forbidden, discord.NotFound, discord.HTTPException):
+                    pass
+                log.info(
+                    "Skipped duplicate spam punishment for %s in guild %s; timeout active until %s",
+                    member.id,
+                    guild.id,
+                    existing_timeout.isoformat(),
+                )
+                return
+
         now = time.time()
         key = f"{guild.id}:{member.id}"
         records = self.bot.store.data.setdefault("automod_spam_events", {})
@@ -639,10 +659,10 @@ class AutoModEngine:
             entries.append((now, content))
             last_five = [item for item in entries if now - item[0] <= 5]
             duplicate_count = sum(1 for _, previous in entries if content and previous == content)
-            if len(last_five) > 10:
-                severity, reason = "spam", "Message flood (>10 messages in 5 seconds)"
-            elif duplicate_count >= 6:
-                severity, reason = "spam", "Repeated copy-paste spam (6+ matching messages)"
+            if len(last_five) > 15:
+                severity, reason = "spam", "Message flood (>15 messages in 5 seconds)"
+            elif duplicate_count >= 9:
+                severity, reason = "spam", "Repeated copy-paste spam (9+ matching messages)"
 
         if severity is None and modules.get("ai", True) is not False:
             ai_reason = await self._ai_check(message)
@@ -651,10 +671,14 @@ class AutoModEngine:
         if severity is None:
             return False
         if severity == "spam":
-            await self._handle_spam_violation(message, reason)
             key = (guild.id, message.author.id)
+            now = time.monotonic()
+            # Reserve this user's burst immediately, before the first await in
+            # the slow moderation handler, so rapid follow-up events cannot
+            # trigger another strike or timeout.
+            self.spam_cooldowns[key] = now + 10
             self.messages.pop(key, None)
-            self.spam_cooldowns[key] = time.monotonic() + 10
+            await self._handle_spam_violation(message, reason)
         else:
             await self._punish(message, severity, reason)
         return True
