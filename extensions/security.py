@@ -929,8 +929,8 @@ class SecurityCog(commands.Cog):
                 async with conn.transaction():
                     rows = await conn.fetch(
                         """SELECT * FROM pvpclub_temporary_roles
-                           WHERE status='active' AND expires_at<=NOW()
-                           AND (retry_after IS NULL OR retry_after<=NOW())
+                           WHERE (status='granting' OR (status='active' AND expires_at<=NOW()))
+                             AND (retry_after IS NULL OR retry_after<=NOW())
                            ORDER BY expires_at LIMIT 25 FOR UPDATE SKIP LOCKED"""
                     )
                     for row in rows:
@@ -951,18 +951,41 @@ class SecurityCog(commands.Cog):
                         if role is None:
                             await conn.execute("UPDATE pvpclub_temporary_roles SET status='role_deleted',updated_at=NOW() WHERE id=$1", int(row["id"]))
                             continue
+                        expiry = _utc(row["expires_at"])
                         try:
+                            # A grant can be interrupted by a Render restart between
+                            # the database intent and the Discord role assignment.
+                            if row["status"] == "granting" and expiry and expiry > discord.utils.utcnow():
+                                if role not in member.roles:
+                                    await member.add_roles(role, reason="PVPClub Empire recovered temporary role grant")
+                                await conn.execute(
+                                    """UPDATE pvpclub_temporary_roles SET status='active',retry_after=NULL,
+                                       last_error=NULL,updated_at=NOW() WHERE id=$1 AND status='granting'""",
+                                    int(row["id"]),
+                                )
+                                await self.modlog(
+                                    guild, "Temporary role grant recovered", str(member), member.id,
+                                    "PVPClub Empire", self.bot.user.id if self.bot.user else None,
+                                    str(row["reason"] or "Recovered after restart"),
+                                    details=f"Role: {role.name} ({role.id})\nExpires: {expiry.strftime('%Y-%m-%d %H:%M UTC')}",
+                                    color=0x57D69A,
+                                )
+                                continue
+
                             if role in member.roles:
                                 await member.remove_roles(role, reason="PVPClub Empire temporary role expired")
-                            await conn.execute("UPDATE pvpclub_temporary_roles SET status='completed',updated_at=NOW(),last_error=NULL WHERE id=$1", int(row["id"]))
+                            await conn.execute(
+                                "UPDATE pvpclub_temporary_roles SET status='completed',updated_at=NOW(),last_error=NULL WHERE id=$1",
+                                int(row["id"]),
+                            )
                             await self.modlog(
                                 guild, "Temporary role expired", str(member), member.id, "PVPClub Empire",
                                 self.bot.user.id if self.bot.user else None, str(row["reason"] or "Scheduled expiry"),
-                                details=f"Role: {role.name} ({role.id})\nExpired: {_utc(row['expires_at']).strftime('%Y-%m-%d %H:%M UTC')}",
+                                details=f"Removed role: {role.name} ({role.id}). Expired: {expiry.strftime('%Y-%m-%d %H:%M UTC') if expiry else 'unknown'}.",
                                 color=0x57D69A,
                             )
                         except discord.HTTPException as exc:
-                            log.exception("Could not expire role %s from member %s", role_id, member_id)
+                            log.exception("Could not process temporary role %s for member %s", role_id, member_id)
                             await conn.execute(
                                 """UPDATE pvpclub_temporary_roles SET attempts=attempts+1,
                                    retry_after=NOW()+INTERVAL '1 minute',last_error=$2,updated_at=NOW() WHERE id=$1""",
@@ -1007,53 +1030,62 @@ class SecurityCog(commands.Cog):
         if pool is None:
             await interaction.followup.send("Temporary roles require PostgreSQL. Check DATABASE_URL.", ephemeral=True)
             return
+
         now = discord.utils.utcnow()
         async with pool.acquire() as conn:
             async with conn.transaction():
                 existing = await conn.fetchrow(
                     """SELECT id,expires_at FROM pvpclub_temporary_roles
-                       WHERE guild_id=$1 AND member_id=$2 AND role_id=$3 AND status='active'
-                       FOR UPDATE""",
+                       WHERE guild_id=$1 AND member_id=$2 AND role_id=$3
+                         AND status IN ('active','granting') FOR UPDATE""",
                     interaction.guild_id, member.id, role.id,
                 )
                 if existing:
                     expiry = max(_utc(existing["expires_at"]) or now, now) + timedelta(seconds=seconds)
                     record_id = int(existing["id"])
                     action = "Temporary role extended"
+                    await conn.execute(
+                        """UPDATE pvpclub_temporary_roles SET status='granting',expires_at=$2,
+                           assigned_by=$3,last_extended_at=NOW(),reason=$4,retry_after=NULL,
+                           last_error=NULL,updated_at=NOW() WHERE id=$1""",
+                        record_id, expiry, interaction.user.id, reason[:1000],
+                    )
                 else:
                     if role in member.roles:
-                        await interaction.followup.send("The member already has this role permanently or from another system. I won't schedule its removal.", ephemeral=True)
+                        await interaction.followup.send(
+                            "The member already has this role permanently or from another system. I won't schedule its removal.",
+                            ephemeral=True,
+                        )
                         return
                     expiry = now + timedelta(seconds=seconds)
-                    try:
-                        rec = await conn.fetchrow(
-                            """INSERT INTO pvpclub_temporary_roles
-                               (guild_id,member_id,role_id,assigned_by,expires_at,reason,status)
-                               VALUES ($1,$2,$3,$4,$5,$6,'active') RETURNING id""",
-                            interaction.guild_id, member.id, role.id, interaction.user.id, expiry, reason[:1000],
-                        )
-                    except Exception:
-                        log.exception("Could not create temporary role record.")
-                        raise
+                    rec = await conn.fetchrow(
+                        """INSERT INTO pvpclub_temporary_roles
+                           (guild_id,member_id,role_id,assigned_by,expires_at,reason,status)
+                           VALUES ($1,$2,$3,$4,$5,$6,'granting') RETURNING id""",
+                        interaction.guild_id, member.id, role.id, interaction.user.id, expiry, reason[:1000],
+                    )
                     record_id = int(rec["id"])
                     action = "Temporary role granted"
+
         try:
             if role not in member.roles:
                 await member.add_roles(role, reason=f"Temporary role: {reason[:400]}")
         except discord.HTTPException:
             await pool.execute(
-                "UPDATE pvpclub_temporary_roles SET status='failed',last_error='Discord role assignment failed',updated_at=NOW() WHERE id=$1",
+                """UPDATE pvpclub_temporary_roles SET status='failed',
+                   last_error='Discord role assignment failed',updated_at=NOW()
+                   WHERE id=$1 AND status='granting'""",
                 record_id,
             )
             log.exception("Could not grant temporary role %s to %s", role.id, member.id)
-            await interaction.followup.send("Discord refused the role assignment. I did not leave an active temporary record.", ephemeral=True)
+            await interaction.followup.send("Discord refused the role assignment. No active temporary assignment was left.", ephemeral=True)
             return
-        if existing:
-            await pool.execute(
-                """UPDATE pvpclub_temporary_roles SET expires_at=$2,assigned_by=$3,last_extended_at=NOW(),
-                   reason=$4,retry_after=NULL,last_error=NULL,updated_at=NOW() WHERE id=$1 AND status='active'""",
-                record_id, expiry, interaction.user.id, reason[:1000],
-            )
+
+        await pool.execute(
+            """UPDATE pvpclub_temporary_roles SET status='active',retry_after=NULL,
+               last_error=NULL,updated_at=NOW() WHERE id=$1 AND status='granting'""",
+            record_id,
+        )
         await self.modlog(
             interaction.guild, action, str(member), member.id, str(interaction.user), interaction.user.id,
             reason, details=f"Role: {role.name} ({role.id})\nExpires: {expiry.strftime('%Y-%m-%d %H:%M UTC')}",
@@ -1063,6 +1095,7 @@ class SecurityCog(commands.Cog):
             f"✅ {role.mention} {'extended for' if existing else 'granted to'} {member.mention} until {expiry.strftime('%Y-%m-%d %H:%M UTC')}.",
             ephemeral=True, allowed_mentions=discord.AllowedMentions.none(),
         )
+
 
 
 temporaryrole_group = app_commands.Group(name="temporaryrole", description="Manage roles with automatic expiry")
@@ -1093,7 +1126,7 @@ async def temporaryrole_remove(interaction, member: discord.Member, role: discor
         await interaction.followup.send(error, ephemeral=True)
         return
     row = await cog.pool().fetchrow(
-        "SELECT id FROM pvpclub_temporary_roles WHERE guild_id=$1 AND member_id=$2 AND role_id=$3 AND status='active'",
+        "SELECT id FROM pvpclub_temporary_roles WHERE guild_id=$1 AND member_id=$2 AND role_id=$3 AND status IN ('active','granting')",
         interaction.guild_id, member.id, role.id,
     )
     if not row:
@@ -1103,7 +1136,7 @@ async def temporaryrole_remove(interaction, member: discord.Member, role: discor
         if role in member.roles:
             await member.remove_roles(role, reason=f"Temporary role manually removed: {reason[:400]}")
         await cog.pool().execute(
-            "UPDATE pvpclub_temporary_roles SET status='manual_removed',updated_at=NOW(),last_error=NULL WHERE id=$1 AND status='active'",
+            "UPDATE pvpclub_temporary_roles SET status='manual_removed',updated_at=NOW(),last_error=NULL WHERE id=$1 AND status IN ('active','granting')",
             int(row["id"]),
         )
     except discord.HTTPException:
@@ -1131,13 +1164,13 @@ async def temporaryrole_list(interaction, member: discord.Member | None = None):
     if member:
         rows = await cog.pool().fetch(
             """SELECT member_id,role_id,expires_at,reason FROM pvpclub_temporary_roles
-               WHERE guild_id=$1 AND member_id=$2 AND status='active' ORDER BY expires_at LIMIT 25""",
+               WHERE guild_id=$1 AND member_id=$2 AND status IN ('active','granting') ORDER BY expires_at LIMIT 25""",
             interaction.guild_id, member.id,
         )
     else:
         rows = await cog.pool().fetch(
             """SELECT member_id,role_id,expires_at,reason FROM pvpclub_temporary_roles
-               WHERE guild_id=$1 AND status='active' ORDER BY expires_at LIMIT 25""",
+               WHERE guild_id=$1 AND status IN ('active','granting') ORDER BY expires_at LIMIT 25""",
             interaction.guild_id,
         )
     if not rows:
