@@ -505,11 +505,26 @@ class CommunityCog(commands.Cog):
                     )
                 except Exception:
                     log.exception("Could not notify the owner about a join-security failure.")
+                should_fail_closed = False
                 if member.bot:
+                    should_fail_closed = bool(
+                        self.bot.store.data.get("bot_approval_channels", {}).get(str(member.guild.id))
+                    )
+                else:
                     try:
-                        await member.kick(reason="PVPClub Empire could not safely process bot approval")
+                        cfg = security.raid_config(member.guild.id)
+                        recent_joins = security.join_windows.get(member.guild.id, ())
+                        should_fail_closed = bool(
+                            cfg.get("active")
+                            or (cfg.get("enabled") and len(recent_joins) >= max(1, int(cfg.get("threshold", 10)) - 1))
+                        )
+                    except Exception:
+                        should_fail_closed = False
+                if should_fail_closed:
+                    try:
+                        await member.kick(reason="PVPClub Empire could not safely enforce join security")
                     except discord.HTTPException:
-                        log.exception("Could not fail-closed remove bot %s after security handler failure", member.id)
+                        log.exception("Could not fail-closed remove member %s after security handler failure", member.id)
                 elif security.raid_config(member.guild.id).get("active"):
                     # Never let a database/API exception bypass an active raid quarantine.
                     try:
