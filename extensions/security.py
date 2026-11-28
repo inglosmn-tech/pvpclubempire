@@ -20,9 +20,9 @@ from discord.ext import commands, tasks
 log = logging.getLogger("pvpclub-empire.security")
 
 LOCKED_PERMISSIONS = (
-    "view_channel", "send_messages", "send_messages_in_threads", "add_reactions",
-    "connect", "speak", "stream", "use_voice_activation", "attach_files",
-    "embed_links", "create_public_threads", "create_private_threads",
+    "view_channel", "read_message_history", "send_messages", "send_messages_in_threads",
+    "add_reactions", "connect", "speak", "stream", "use_voice_activation",
+    "attach_files", "embed_links", "create_public_threads", "create_private_threads",
     "use_application_commands", "use_external_apps", "send_voice_messages",
     "send_polls", "create_instant_invite", "mention_everyone", "use_soundboard",
     "use_embedded_activities", "send_tts_messages",
@@ -295,6 +295,8 @@ class SecurityCog(commands.Cog):
             if hasattr(overwrite, "read_message_history"):
                 overwrite.read_message_history = True
             overwrite.send_messages = False
+            if hasattr(overwrite, "create_instant_invite"):
+                overwrite.create_instant_invite = False
         else:
             overwrite.view_channel = False
         await channel.set_permissions(member, overwrite=overwrite, reason=f"PVPClub Empire {scope} quarantine")
@@ -362,6 +364,20 @@ class SecurityCog(commands.Cog):
                 log.exception("Failed to restore quarantine for %s in guild %s", member.id, guild.id)
                 return False
 
+    async def clear_quarantine_backups(self, guild_id: int, member_id: int, scope: str):
+        """Remove persisted member overwrite snapshots after the Discord action is complete."""
+        pool = self.pool()
+        if pool is None:
+            return
+        await pool.execute(
+            "DELETE FROM pvpclub_active_quarantines WHERE guild_id=$1 AND member_id=$2 AND scope=$3",
+            guild_id, member_id, scope,
+        )
+        await pool.execute(
+            "DELETE FROM pvpclub_quarantine_overwrites WHERE guild_id=$1 AND member_id=$2 AND scope=$3",
+            guild_id, member_id, scope,
+        )
+
     async def on_new_channel(self, channel: discord.abc.GuildChannel):
         pool = self.pool()
         if pool is None:
@@ -404,8 +420,9 @@ class SecurityCog(commands.Cog):
             return
         bot_perms = ctx.guild.me.guild_permissions
         perms = channel.permissions_for(ctx.guild.me)
-        if not bot_perms.manage_roles or not perms.view_channel or not perms.send_messages or not perms.embed_links:
-            await ctx.reply("I need Manage Roles and View Channel, Send Messages and Embed Links in that channel.", mention_author=False)
+        if (not bot_perms.manage_roles or not bot_perms.kick_members
+                or not perms.view_channel or not perms.send_messages or not perms.embed_links):
+            await ctx.reply("I need Manage Roles and Kick Members, plus View Channel, Send Messages and Embed Links in that channel so I can quarantine or fail closed.", mention_author=False)
             return
 
         status_message = await ctx.reply("Scanning existing members so their current bots can be grandfathered in...", mention_author=False)
@@ -543,7 +560,7 @@ class SecurityCog(commands.Cog):
         # Bot approval is opt-in. Do not affect bots until the owner configures it.
         configured_channel = self.bot.store.data.get("bot_approval_channels", {}).get(str(guild.id))
         if not configured_channel:
-            return
+            return False
         pool = self.pool()
         if pool is None:
             await self.owner_alert(guild, "Bot approval unavailable", f"{member} ({member.id}) joined, but PostgreSQL is unavailable.")
@@ -551,7 +568,8 @@ class SecurityCog(commands.Cog):
                 await member.kick(reason="PVPClub Empire cannot persist bot approval state")
             except discord.HTTPException:
                 log.exception("Fail-closed bot kick failed for %s", member.id)
-            return
+                await self.owner_alert(guild, "Unapproved bot still present", f"Could not remove {member} ({member.id}); check Kick Members and role hierarchy.")
+            return True
 
         row = await pool.fetchrow(
             "SELECT status,review_channel_id,review_message_id,invited_by FROM pvpclub_bot_approvals WHERE guild_id=$1 AND bot_id=$2",
@@ -564,14 +582,14 @@ class SecurityCog(commands.Cog):
             )
             if active and not await self.restore_quarantine(guild, member, "bot"):
                 await self.owner_alert(guild, "Approved bot is still quarantined", f"Could not restore all saved permissions for {member} ({member.id}).")
-            return
+            return False
         if row and row["status"] == "rejected":
             try:
                 await member.kick(reason="Previously rejected by the server owner")
             except discord.HTTPException:
                 log.exception("Previously rejected bot %s could not be kicked", member.id)
                 await self.owner_alert(guild, "Rejected bot rejoined", f"Could not kick {member} ({member.id}).")
-            return
+            return True
 
         channel = guild.get_channel(int(configured_channel))
         if not isinstance(channel, discord.TextChannel):
@@ -583,7 +601,8 @@ class SecurityCog(commands.Cog):
                 await member.kick(reason="PVPClub Empire bot approval channel is unavailable")
             except discord.HTTPException:
                 log.exception("Could not kick bot %s without an available approval channel", member.id)
-            return
+                await self.owner_alert(guild, "Unapproved bot still present", f"Could not remove {member} ({member.id}); check Kick Members and role hierarchy.")
+            return True
 
         # Persist pending state before Discord permission edits. The worker can
         # complete quarantine and panel creation after any process interruption.
@@ -614,6 +633,8 @@ class SecurityCog(commands.Cog):
         review_id = int(pending["review_message_id"]) if was_pending and pending and pending["review_message_id"] else None
         invited_id = int(pending["invited_by"]) if pending and pending["invited_by"] else None
         await self.ensure_pending_bot(guild, member, channel, review_id, invited_id)
+        # Pending or rejected bots must not receive autoroles or normal welcome panels.
+        return True
 
     async def decide_bot(self, guild, bot_id: int, approved: bool, actor, review_message_id: int | None):
         pool = self.pool()
@@ -768,8 +789,7 @@ class SecurityCog(commands.Cog):
 
     async def handle_member_join(self, member: discord.Member) -> bool:
         if member.bot:
-            await self.handle_bot_join(member)
-            return False
+            return await self.handle_bot_join(member)
         guild = member.guild
         pool = self.pool()
         # A previous member-specific overwrite may survive a departure if
@@ -796,14 +816,19 @@ class SecurityCog(commands.Cog):
                     await self.owner_alert(guild, "Quarantine cleanup failed on rejoin", f"Could not restore saved permissions for {member} ({member.id}).")
 
         config = self.raid_config(guild.id)
-        if not config.get("enabled") or self.trusted_member(member) or pool is None:
+        if not config.get("enabled") or self.trusted_member(member):
             return False
+        if pool is None:
+            await self.owner_alert(guild, "Raid Protection cannot verify joins", "PostgreSQL is unavailable. I cannot persist or safely enforce verification for new arrivals.")
+            try:
+                await member.kick(reason="PVPClub Empire cannot enforce raid verification while its database is unavailable")
+            except discord.HTTPException:
+                log.exception("Could not fail-closed remove member %s while verification storage is unavailable", member.id)
+            return True
         if await self.is_verified(guild.id, member.id):
             return False
         channel_id = config.get("verification_channel_id")
         channel = guild.get_channel(int(channel_id)) if channel_id else None
-        if not isinstance(channel, discord.TextChannel):
-            return False
         now = time.monotonic()
         bucket = self.join_windows[guild.id]
         window = int(config.get("window_seconds", 10))
@@ -831,6 +856,19 @@ class SecurityCog(commands.Cog):
         if not triggered and not active:
             return False
         candidates = [uid for _, uid in bucket] if triggered else [member.id]
+        if not isinstance(channel, discord.TextChannel):
+            await self.owner_alert(
+                guild, "Raid verification channel unavailable",
+                "Raid Protection is active, but the configured verification channel is missing or inaccessible. New arrivals are being removed rather than allowed into normal channels.",
+            )
+            for user_id in dict.fromkeys(candidates):
+                candidate = guild.get_member(user_id)
+                if candidate and not self.trusted_member(candidate):
+                    try:
+                        await candidate.kick(reason="PVPClub Empire verification channel is unavailable during raid protection")
+                    except discord.HTTPException:
+                        log.exception("Could not fail-closed remove unverified member %s", user_id)
+            return True
         for user_id in dict.fromkeys(candidates):
             candidate = guild.get_member(user_id)
             if candidate is None or candidate.bot or self.trusted_member(candidate):
@@ -1289,9 +1327,7 @@ class SecurityCog(commands.Cog):
             return "I need Manage Roles."
         if role.is_default() or role.managed or role >= bot_member.top_role:
             return "That role is @everyone, managed, or at/above my highest role."
-        if member.id == guild.owner_id:
-            return "Temporary roles cannot be assigned to the server owner."
-        if member.top_role >= bot_member.top_role:
+        if member.id != guild.owner_id and member.top_role >= bot_member.top_role:
             return "My highest role must be above the target member's highest role."
         if actor.id != guild.owner_id:
             if member.id == guild.owner_id or member.top_role >= actor.top_role or role >= actor.top_role:
