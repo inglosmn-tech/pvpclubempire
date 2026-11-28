@@ -1732,7 +1732,7 @@ async def on_message(message: discord.Message):
 
     # Winglos Pizza duck callback: match "quack" as a standalone word,
     # case-insensitively, after AutoMod accepts the message.
-    if re.search(r"\\bquack\\b", message.content or "", flags=re.IGNORECASE):
+    if re.search(r"\bquack\b", message.content or "", flags=re.IGNORECASE):
         await message.reply(
             "🦆 Quack! Get ur pizza at Winglos Pizza 🍕",
             mention_author=False,
