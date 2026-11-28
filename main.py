@@ -1730,6 +1730,15 @@ async def on_message(message: discord.Message):
     if automod_cog and await automod_cog.engine.check_message(message):
         return
 
+    # Winglos Pizza duck callback: match "quack" as a standalone word,
+    # case-insensitively, after AutoMod accepts the message.
+    if re.search(r"\\bquack\\b", message.content or "", flags=re.IGNORECASE):
+        await message.reply(
+            "🦆 Quack! Get ur pizza at Winglos Pizza 🍕",
+            mention_author=False,
+            allowed_mentions=discord.AllowedMentions.none(),
+        )
+
     # XP and meow listeners run only after AutoMod has accepted the message.
     leveling_cog = bot.get_cog("LevelingCog")
     if leveling_cog:
