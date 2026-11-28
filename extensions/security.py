@@ -861,7 +861,8 @@ class SecurityCog(commands.Cog):
                 f"{len(bucket)} humans joined within {window} seconds (trigger: {config['threshold']}).",
                 details=f"Verification channel: {channel.mention if isinstance(channel, discord.TextChannel) else 'Unavailable'}", color=0xFFB347,
             )
-            await self.owner_alert(guild, "Raid Protection activated", f"{len(bucket)} members joined in {window} seconds. New human arrivals are being verified in {channel.mention}.")
+            channel_label = channel.mention if isinstance(channel, discord.TextChannel) else "the configured verification channel"
+            await self.owner_alert(guild, "Raid Protection activated", f"{len(bucket)} members joined in {window} seconds. New human arrivals are being verified in {channel_label}.")
         elif active:
             config["ends_at"] = max(ends, discord.utils.utcnow() + timedelta(minutes=int(config["protection_minutes"]))).isoformat()
             await self.bot.store.save()
@@ -1056,163 +1057,184 @@ class SecurityCog(commands.Cog):
 
     @tasks.loop(seconds=30)
     async def raid_worker(self):
-        pool = self.pool()
-        if pool is None:
-            return
-        now = discord.utils.utcnow()
         try:
-            interrupted = await pool.fetch(
-                """SELECT q.guild_id,q.member_id FROM pvpclub_active_quarantines q
-                   JOIN pvpclub_raid_verifications v ON v.guild_id=q.guild_id AND v.member_id=q.member_id
-                   WHERE q.scope='raid' AND v.status='verified' LIMIT 100"""
-            )
-            for item in interrupted:
-                guild = self.bot.get_guild(int(item["guild_id"]))
-                member = guild.get_member(int(item["member_id"])) if guild else None
-                if guild and member:
-                    await self.restore_quarantine(guild, member, "raid")
+            await self._raid_worker_tick()
         except Exception:
-            log.exception("Could not recover completed verifications after restart.")
-        # Recover pending bot approvals even if the process stopped before
-        # quarantine or review-panel creation completed.
-        try:
-            pending_bots = await pool.fetch(
-                """SELECT guild_id,bot_id,review_channel_id,review_message_id,invited_by
-                   FROM pvpclub_bot_approvals WHERE status='pending'
-                   ORDER BY joined_at LIMIT 100"""
-            )
-            for row in pending_bots:
-                guild = self.bot.get_guild(int(row["guild_id"]))
-                if guild is None:
-                    continue
-                member = guild.get_member(int(row["bot_id"]))
-                if member is None:
+            log.exception("Raid protection worker tick failed; it will retry on the next interval.")
+
+    async def _raid_worker_tick(self):
+            pool = self.pool()
+            if pool is None:
+                return
+            now = discord.utils.utcnow()
+            try:
+                interrupted = await pool.fetch(
+                    """SELECT q.guild_id,q.member_id FROM pvpclub_active_quarantines q
+                       JOIN pvpclub_raid_verifications v ON v.guild_id=q.guild_id AND v.member_id=q.member_id
+                       WHERE q.scope='raid' AND v.status='verified' LIMIT 100"""
+                )
+                for item in interrupted:
+                    guild = self.bot.get_guild(int(item["guild_id"]))
+                    member = guild.get_member(int(item["member_id"])) if guild else None
+                    if guild and member:
+                        await self.restore_quarantine(guild, member, "raid")
+            except Exception:
+                log.exception("Could not recover completed verifications after restart.")
+            # Recover pending bot approvals even if the process stopped before
+            # quarantine or review-panel creation completed.
+            try:
+                pending_bots = await pool.fetch(
+                    """SELECT guild_id,bot_id,review_channel_id,review_message_id,invited_by
+                       FROM pvpclub_bot_approvals WHERE status='pending'
+                       ORDER BY joined_at LIMIT 100"""
+                )
+                for row in pending_bots:
+                    guild = self.bot.get_guild(int(row["guild_id"]))
+                    if guild is None:
+                        continue
+                    member = guild.get_member(int(row["bot_id"]))
+                    if member is None:
+                        try:
+                            member = await guild.fetch_member(int(row["bot_id"]))
+                        except discord.NotFound:
+                            await pool.execute(
+                                "UPDATE pvpclub_bot_approvals SET status='left' WHERE guild_id=$1 AND bot_id=$2 AND status='pending'",
+                                guild.id, int(row["bot_id"]),
+                            )
+                            continue
+                        except discord.HTTPException:
+                            continue
+                    review_channel_id = row["review_channel_id"] or self.bot.store.data.get("bot_approval_channels", {}).get(str(guild.id))
+                    review_channel = guild.get_channel(int(review_channel_id)) if review_channel_id else None
+                    await self.ensure_pending_bot(
+                        guild, member, review_channel,
+                        int(row["review_message_id"]) if row["review_message_id"] else None,
+                        int(row["invited_by"]) if row["invited_by"] else None,
+                    )
+            except Exception:
+                log.exception("Could not recover pending bot approval requests.")
+    
+            try:
+                terminal_bots = await pool.fetch(
+                    """SELECT q.guild_id,q.member_id,a.status
+                       FROM pvpclub_active_quarantines q
+                       LEFT JOIN pvpclub_bot_approvals a
+                         ON a.guild_id=q.guild_id AND a.bot_id=q.member_id
+                       WHERE q.scope='bot' AND (a.status IS NULL OR a.status IN ('approved','rejected','quarantine_failed'))
+                       LIMIT 100"""
+                )
+                for item in terminal_bots:
+                    guild = self.bot.get_guild(int(item["guild_id"]))
+                    if guild is None:
+                        continue
+                    member = guild.get_member(int(item["member_id"]))
+                    if member is None:
+                        try:
+                            member = await guild.fetch_member(int(item["member_id"]))
+                        except discord.NotFound:
+                            # Keep backups so a bot that rejoins can have stale
+                            # member-specific quarantine overwrites restored.
+                            continue
+                        except discord.HTTPException:
+                            continue
+                    if item["status"] == "approved":
+                        await self.restore_quarantine(guild, member, "bot")
+                        continue
+                    # Rejected/quarantine-failed bots, or an orphan quarantine record
+                    # without a matching approval row, must not regain access.
                     try:
-                        member = await guild.fetch_member(int(row["bot_id"]))
-                    except discord.NotFound:
+                        await member.kick(reason="PVPClub Empire recovered an unapproved bot after restart")
                         await pool.execute(
-                            "UPDATE pvpclub_bot_approvals SET status='left' WHERE guild_id=$1 AND bot_id=$2 AND status='pending'",
-                            guild.id, int(row["bot_id"]),
+                            "DELETE FROM pvpclub_active_quarantines WHERE guild_id=$1 AND member_id=$2 AND scope='bot'",
+                            guild.id, member.id,
                         )
-                        await self.clear_quarantine_backups(guild.id, int(row["bot_id"]), "bot")
-                        continue
+                        await pool.execute(
+                            "DELETE FROM pvpclub_quarantine_overwrites WHERE guild_id=$1 AND member_id=$2 AND scope='bot'",
+                            guild.id, member.id,
+                        )
+                        if item["status"] is None:
+                            await self.owner_alert(guild, "Orphaned bot quarantine", f"Kicked {member} ({member.id}) because its approval record was missing after a restart.")
                     except discord.HTTPException:
-                        continue
-                review_channel_id = row["review_channel_id"] or self.bot.store.data.get("bot_approval_channels", {}).get(str(guild.id))
-                review_channel = guild.get_channel(int(review_channel_id)) if review_channel_id else None
-                await self.ensure_pending_bot(
-                    guild, member, review_channel,
-                    int(row["review_message_id"]) if row["review_message_id"] else None,
-                    int(row["invited_by"]) if row["invited_by"] else None,
+                        log.exception("Could not remove unapproved bot %s after restart", member.id)
+                        await self.owner_alert(guild, "Unapproved bot still present", f"Could not remove {member} ({member.id}) after restart. Check Kick Members and role hierarchy.")
+            except Exception:
+                log.exception("Could not reconcile terminal bot approval states.")
+    
+            # Verification panels whose database record exists but panel send was
+            # interrupted are recreated after a restart.
+            try:
+                missing_panels = await pool.fetch(
+                    """SELECT guild_id,member_id FROM pvpclub_raid_verifications
+                       WHERE status='pending' AND panel_message_id IS NULL LIMIT 100"""
                 )
-        except Exception:
-            log.exception("Could not recover pending bot approval requests.")
-
-        try:
-            terminal_bots = await pool.fetch(
-                """SELECT q.guild_id,q.member_id,a.status
-                   FROM pvpclub_active_quarantines q
-                   LEFT JOIN pvpclub_bot_approvals a
-                     ON a.guild_id=q.guild_id AND a.bot_id=q.member_id
-                   WHERE q.scope='bot' AND (a.status IS NULL OR a.status IN ('approved','rejected','quarantine_failed'))
-                   LIMIT 100"""
+                for item in missing_panels:
+                    guild = self.bot.get_guild(int(item["guild_id"]))
+                    member = guild.get_member(int(item["member_id"])) if guild else None
+                    config = self.raid_config(guild.id) if guild else {}
+                    channel_id = config.get("verification_channel_id")
+                    channel = guild.get_channel(int(channel_id)) if guild and channel_id else None
+                    if guild and member and isinstance(channel, discord.TextChannel):
+                        try:
+                            await self.create_challenge(guild, member, channel)
+                        except Exception:
+                            log.exception("Could not recover verification panel for member %s", member.id)
+    
+            except Exception:
+                log.exception("Could not recover verification panels.")
+    
+            for guild in self.bot.guilds:
+                config = self.raid_config(guild.id)
+                ends = _utc(config.get("ends_at"))
+                if config.get("active") and ends and ends <= now:
+                    config["active"] = False
+                    await self.bot.store.save()
+                    await self.modlog(guild, "Raid protection ended", "Protection window", guild.id, "PVPClub Empire", None, "Configured protection window elapsed. Unverified members remain quarantined.", color=0x57D69A)
+            rows = await self.pool().fetch(
+                """SELECT guild_id,member_id,status,expires_at,expired_at FROM pvpclub_raid_verifications
+                   WHERE status IN ('pending','expired','failed') ORDER BY expires_at LIMIT 100"""
             )
-            for item in terminal_bots:
-                guild = self.bot.get_guild(int(item["guild_id"]))
-                if guild is None:
+            for row in rows:
+                guild = self.bot.get_guild(int(row["guild_id"]))
+                if not guild:
                     continue
-                member = guild.get_member(int(item["member_id"]))
-                if member is None:
-                    try:
-                        member = await guild.fetch_member(int(item["member_id"]))
-                    except discord.NotFound:
-                        # Keep backups so a bot that rejoins can have stale
-                        # member-specific quarantine overwrites restored.
-                        continue
-                        continue
-                    except discord.HTTPException:
-                        continue
-                if item["status"] == "approved":
-                    await self.restore_quarantine(guild, member, "bot")
-                    continue
-                # Rejected/quarantine-failed bots, or an orphan quarantine record
-                # without a matching approval row, must not regain access.
-                try:
-                    await member.kick(reason="PVPClub Empire recovered an unapproved bot after restart")
-                    await pool.execute(
-                        "DELETE FROM pvpclub_active_quarantines WHERE guild_id=$1 AND member_id=$2 AND scope='bot'",
-                        guild.id, member.id,
+                member_id = int(row["member_id"])
+                status = str(row["status"])
+                expiry = _utc(row["expires_at"])
+                expired_at = _utc(row["expired_at"])
+                if status == "pending" and expiry and expiry <= now:
+                    await self.pool().execute(
+                        "UPDATE pvpclub_raid_verifications SET status='expired',expired_at=COALESCE(expired_at,NOW()) WHERE guild_id=$1 AND member_id=$2 AND status='pending'",
+                        guild.id, member_id,
                     )
-                    await pool.execute(
-                        "DELETE FROM pvpclub_quarantine_overwrites WHERE guild_id=$1 AND member_id=$2 AND scope='bot'",
-                        guild.id, member.id,
-                    )
-                    if item["status"] is None:
-                        await self.owner_alert(guild, "Orphaned bot quarantine", f"Kicked {member} ({member.id}) because its approval record was missing after a restart.")
-                except discord.HTTPException:
-                    log.exception("Could not remove unapproved bot %s after restart", member.id)
-                    await self.owner_alert(guild, "Unapproved bot still present", f"Could not remove {member} ({member.id}) after restart. Check Kick Members and role hierarchy.")
-        except Exception:
-            log.exception("Could not reconcile terminal bot approval states.")
-
-        # Verification panels whose database record exists but panel send was
-        # interrupted are recreated after a restart.
-        try:
-            missing_panels = await pool.fetch(
-                """SELECT guild_id,member_id FROM pvpclub_raid_verifications
-                   WHERE status='pending' AND panel_message_id IS NULL LIMIT 100"""
-            )
-            for item in missing_panels:
-                guild = self.bot.get_guild(int(item["guild_id"]))
-                member = guild.get_member(int(item["member_id"])) if guild else None
-                config = self.raid_config(guild.id) if guild else {}
-                channel_id = config.get("verification_channel_id")
-                channel = guild.get_channel(int(channel_id)) if guild and channel_id else None
-                if guild and member and isinstance(channel, discord.TextChannel):
+                    expired_at = now
+                    await self.modlog(guild, "Verification expired", f"Member {member_id}", member_id, "PVPClub Empire", None, "Challenge expired; member remains quarantined.")
+                config = self.raid_config(guild.id)
+                kick_after = int(config.get("kick_after_minutes", 0) or 0)
+                if kick_after and expired_at and now >= expired_at + timedelta(minutes=kick_after):
+                    member = guild.get_member(member_id)
+                    if member is None:
+                        try:
+                            member = await guild.fetch_member(member_id)
+                        except discord.NotFound:
+                            await self.pool().execute(
+                                "UPDATE pvpclub_raid_verifications SET status='left' WHERE guild_id=$1 AND member_id=$2 AND status IN ('pending','expired','failed')",
+                                guild.id, member_id,
+                            )
+                            await self.pool().execute(
+                                "DELETE FROM pvpclub_active_quarantines WHERE guild_id=$1 AND member_id=$2 AND scope='raid'",
+                                guild.id, member_id,
+                            )
+                            await self.pool().execute(
+                                "DELETE FROM pvpclub_quarantine_overwrites WHERE guild_id=$1 AND member_id=$2 AND scope='raid'",
+                                guild.id, member_id,
+                            )
+                            continue
+                        except discord.HTTPException:
+                            continue
                     try:
-                        await self.create_challenge(guild, member, channel)
-                    except Exception:
-                        log.exception("Could not recover verification panel for member %s", member.id)
-
-        except Exception:
-            log.exception("Could not recover verification panels.")
-
-        for guild in self.bot.guilds:
-            config = self.raid_config(guild.id)
-            ends = _utc(config.get("ends_at"))
-            if config.get("active") and ends and ends <= now:
-                config["active"] = False
-                await self.bot.store.save()
-                await self.modlog(guild, "Raid protection ended", "Protection window", guild.id, "PVPClub Empire", None, "Configured protection window elapsed. Unverified members remain quarantined.", color=0x57D69A)
-        rows = await self.pool().fetch(
-            """SELECT guild_id,member_id,status,expires_at,expired_at FROM pvpclub_raid_verifications
-               WHERE status IN ('pending','expired','failed') ORDER BY expires_at LIMIT 100"""
-        )
-        for row in rows:
-            guild = self.bot.get_guild(int(row["guild_id"]))
-            if not guild:
-                continue
-            member_id = int(row["member_id"])
-            status = str(row["status"])
-            expiry = _utc(row["expires_at"])
-            expired_at = _utc(row["expired_at"])
-            if status == "pending" and expiry and expiry <= now:
-                await self.pool().execute(
-                    "UPDATE pvpclub_raid_verifications SET status='expired',expired_at=COALESCE(expired_at,NOW()) WHERE guild_id=$1 AND member_id=$2 AND status='pending'",
-                    guild.id, member_id,
-                )
-                expired_at = now
-                await self.modlog(guild, "Verification expired", f"Member {member_id}", member_id, "PVPClub Empire", None, "Challenge expired; member remains quarantined.")
-            config = self.raid_config(guild.id)
-            kick_after = int(config.get("kick_after_minutes", 0) or 0)
-            if kick_after and expired_at and now >= expired_at + timedelta(minutes=kick_after):
-                member = guild.get_member(member_id)
-                if member is None:
-                    try:
-                        member = await guild.fetch_member(member_id)
-                    except discord.NotFound:
+                        await member.kick(reason="PVPClub Empire raid verification expired")
                         await self.pool().execute(
-                            "UPDATE pvpclub_raid_verifications SET status='left' WHERE guild_id=$1 AND member_id=$2 AND status IN ('pending','expired','failed')",
+                            "UPDATE pvpclub_raid_verifications SET status='kicked' WHERE guild_id=$1 AND member_id=$2 AND status IN ('pending','expired','failed')",
                             guild.id, member_id,
                         )
                         await self.pool().execute(
@@ -1223,26 +1245,10 @@ class SecurityCog(commands.Cog):
                             "DELETE FROM pvpclub_quarantine_overwrites WHERE guild_id=$1 AND member_id=$2 AND scope='raid'",
                             guild.id, member_id,
                         )
-                        continue
+                        await self.modlog(guild, "Unverified member kicked", str(member), member.id, "PVPClub Empire", None, f"Challenge expired; kick delay was {kick_after} minutes.")
                     except discord.HTTPException:
-                        continue
-                try:
-                    await member.kick(reason="PVPClub Empire raid verification expired")
-                    await self.pool().execute(
-                        "UPDATE pvpclub_raid_verifications SET status='kicked' WHERE guild_id=$1 AND member_id=$2 AND status IN ('pending','expired','failed')",
-                        guild.id, member_id,
-                    )
-                    await self.pool().execute(
-                        "DELETE FROM pvpclub_active_quarantines WHERE guild_id=$1 AND member_id=$2 AND scope='raid'",
-                        guild.id, member_id,
-                    )
-                    await self.pool().execute(
-                        "DELETE FROM pvpclub_quarantine_overwrites WHERE guild_id=$1 AND member_id=$2 AND scope='raid'",
-                        guild.id, member_id,
-                    )
-                    await self.modlog(guild, "Unverified member kicked", str(member), member.id, "PVPClub Empire", None, f"Challenge expired; kick delay was {kick_after} minutes.")
-                except discord.HTTPException:
-                    log.exception("Could not kick expired unverified member %s", member_id)
+                        log.exception("Could not kick expired unverified member %s", member_id)
+    
 
     @raid_worker.before_loop
     async def before_raid_worker(self):
