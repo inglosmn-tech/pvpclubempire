@@ -99,7 +99,10 @@ class BotApprovalView(discord.ui.View):
             await interaction.response.send_message("Only the actual server owner can approve or reject bots.", ephemeral=True)
             return
         await interaction.response.defer(ephemeral=True, thinking=True)
-        ok, message = await self.cog.decide_bot(interaction.guild, self.bot_id, approved, interaction.user)
+        review_message_id = interaction.message.id if interaction.message else None
+        ok, message = await self.cog.decide_bot(
+            interaction.guild, self.bot_id, approved, interaction.user, review_message_id
+        )
         if ok and interaction.message:
             try:
                 await interaction.message.edit(view=BotApprovalView(self.cog, self.guild_id, self.bot_id, disabled=True))
@@ -512,23 +515,28 @@ class SecurityCog(commands.Cog):
         e.add_field(name="Invited by", value=f"{inviter} ({inviter.id})" if inviter else "Unavailable (audit log permission or entry not available)", inline=False)
         e.set_footer(text="Only the actual server owner can approve or reject.")
         try:
-            message = await channel.send(embed=e, view=BotApprovalView(self, guild.id, member.id))
+            # Persist the exact review-message ID before enabling its buttons so
+            # stale panels from a previous join can never decide a new request.
+            message = await channel.send(embed=e)
             await pool.execute(
                 "UPDATE pvpclub_bot_approvals SET review_message_id=$3 WHERE guild_id=$1 AND bot_id=$2 AND status='pending'",
                 guild.id, member.id, message.id,
             )
+            await message.edit(view=BotApprovalView(self, guild.id, member.id))
         except discord.HTTPException:
             log.exception("Could not send approval panel for bot %s", member.id)
             await self.owner_alert(guild, "Bot approval panel failed", f"{member} ({member.id}) remains quarantined, but I could not post the review message in {channel.mention}.")
 
-    async def decide_bot(self, guild, bot_id: int, approved: bool, actor):
+    async def decide_bot(self, guild, bot_id: int, approved: bool, actor, review_message_id: int | None):
         pool = self.pool()
         row = await pool.fetchrow(
-            "SELECT status FROM pvpclub_bot_approvals WHERE guild_id=$1 AND bot_id=$2",
+            "SELECT status,review_message_id FROM pvpclub_bot_approvals WHERE guild_id=$1 AND bot_id=$2",
             guild.id, bot_id,
         )
         if not row or row["status"] != "pending":
             return False, "This bot has no pending approval request."
+        if not review_message_id or int(row["review_message_id"] or 0) != int(review_message_id):
+            return False, "This is an outdated approval panel. Use the latest bot approval message."
         member = guild.get_member(bot_id)
         if member is None:
             try:
@@ -849,6 +857,23 @@ class SecurityCog(commands.Cog):
                 await self.restore_quarantine(member.guild, member, scope)
             except Exception:
                 log.exception("Could not restore quarantine overwrites for departing member %s", member.id)
+        if member.bot:
+            try:
+                review = await pool.fetchrow(
+                    """SELECT review_channel_id,review_message_id FROM pvpclub_bot_approvals
+                       WHERE guild_id=$1 AND bot_id=$2 AND status='pending'""",
+                    member.guild.id, member.id,
+                )
+                if review and review["review_channel_id"] and review["review_message_id"]:
+                    review_channel = member.guild.get_channel(int(review["review_channel_id"]))
+                    if isinstance(review_channel, discord.TextChannel):
+                        try:
+                            old_message = await review_channel.fetch_message(int(review["review_message_id"]))
+                            await old_message.edit(view=BotApprovalView(self, member.guild.id, member.id, disabled=True))
+                        except discord.HTTPException:
+                            log.info("Could not disable departed bot's review panel for %s", member.id)
+            except Exception:
+                log.exception("Could not close the review panel for departing bot %s", member.id)
         try:
             await pool.execute(
                 """UPDATE pvpclub_bot_approvals SET status='left'
