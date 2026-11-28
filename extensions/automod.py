@@ -332,14 +332,14 @@ class AutoModEngine:
         images = await self._moderation_image_inputs(message) if nsfw_enabled else []
         modules = config.get("modules", {}) if isinstance(config.get("modules", {}), dict) else {}
         ai_enabled = modules.get("ai", True) is not False
-        if not images and (not ai_enabled or len(text) < 18):
-            return None
         if not images and not text:
+            return None
+        if not images and not nsfw_enabled and (not ai_enabled or len(text) < 18):
             return None
 
         key = (message.guild.id, message.author.id)
         now = time.monotonic()
-        if not images and now - self.ai_last_check.get(key, 0.0) < 8:
+        if not images and not nsfw_enabled and now - self.ai_last_check.get(key, 0.0) < 8:
             return None
         self.ai_last_check[key] = now
         inputs = []
@@ -1036,9 +1036,15 @@ async def automod_nsfw_on(interaction: discord.Interaction):
     if not interaction.client.session or not __import__("os").getenv("OPENAI_API_KEY"):
         await interaction.response.send_message("Set OPENAI_API_KEY in Render before enabling AI text and image filtering.", ephemeral=True)
         return
+    log_id = _bot.store.data.get("modlog_channels", {}).get(str(interaction.guild_id))
+    log_channel = interaction.guild.get_channel(int(log_id)) if log_id else None
+    if not isinstance(log_channel, discord.TextChannel):
+        await interaction.response.send_message("Run /automod nsfw setup first so moderation actions have a log channel.", ephemeral=True)
+        return
     config["nsfw_enabled"] = True
+    _bot.store.data.setdefault("automod_settings", {})[str(interaction.guild_id)] = True
     await _bot.store.save()
-    await interaction.response.send_message("✅ NSFW text and image filtering is enabled.", ephemeral=True)
+    await interaction.response.send_message("✅ NSFW text and image filtering is enabled. The main AutoMod switch is also on.", ephemeral=True)
 
 
 @nsfw_group.command(name="off", description="Disable explicit text and image filtering.")
@@ -1092,6 +1098,7 @@ async def automod_nsfw_setup(
         return
     config = _bot.store.data.setdefault("automod_config", {}).setdefault(str(interaction.guild_id), {})
     config["nsfw_enabled"] = True
+    _bot.store.data.setdefault("automod_settings", {})[str(interaction.guild_id)] = True
     config["nsfw_sexual_threshold"] = float(sexual_threshold)
     config["nsfw_minor_threshold"] = float(minors_threshold)
     _bot.store.data.setdefault("modlog_channels", {})[str(interaction.guild_id)] = str(log_channel.id)
