@@ -59,6 +59,7 @@ def default_data() -> dict[str, Any]:
         "warnings": {}, "modlog_channels": {}, "logs_channels": {},
         "event_settings": {}, "events": {}, "tier_watch_channels": {},
         "tier_watchlists": {}, "automod_settings": {}, "automod_config": {},
+        "bot_approval_channels": {}, "raid_config": {},
         "automod_strikes": {}, "automod_spam_events": {}, "meow_role_config": {}, "suggestion_channels": {},
         "welcome_channels": {}, "autoroles": {}, "birthday_channels": {},
         "level_config": {}, "storage_meta": {"updated_at": 0.0},
@@ -870,6 +871,8 @@ class EmpireBot(commands.Bot):
         intents = discord.Intents.default()
         intents.message_content = True
         intents.members = True
+        intents.auto_moderation_configuration = True
+        intents.auto_moderation_execution = True
         super().__init__(command_prefix=("?", "!"), intents=intents, case_insensitive=True)
         self.store = DataStore(DATA_FILE)
         self.session: aiohttp.ClientSession | None = None
@@ -895,7 +898,7 @@ class EmpireBot(commands.Bot):
             log.info("Removed obsolete legacy tier and ELO data from persistent storage.")
         # New subsystems are loaded as extensions so moderation/community/leveling
         # stay separated from the existing bot core.
-        for extension in ("extensions.automod", "extensions.community", "extensions.leveling", "extensions.pvpclubtiers"):
+        for extension in ("extensions.automod", "extensions.security", "extensions.community", "extensions.leveling", "extensions.pvpclubtiers"):
             await self.load_extension(extension)
         await self.start_status_site()
         # Persistent views have stable custom IDs and no timeout.
