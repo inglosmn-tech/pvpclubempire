@@ -1124,6 +1124,10 @@ class SecurityCog(commands.Cog):
             return "I need Manage Roles."
         if role.is_default() or role.managed or role >= bot_member.top_role:
             return "That role is @everyone, managed, or at/above my highest role."
+        if member.id == guild.owner_id:
+            return "Temporary roles cannot be assigned to the server owner."
+        if member.top_role >= bot_member.top_role:
+            return "My highest role must be above the target member's highest role."
         if actor.id != guild.owner_id:
             if member.id == guild.owner_id or member.top_role >= actor.top_role or role >= actor.top_role:
                 return "You must have a higher role than the target and the role you are assigning."
@@ -1151,7 +1155,7 @@ class SecurityCog(commands.Cog):
                 lock_key = int(hashlib.sha256(
                     f"{interaction.guild_id}:{member.id}:{role.id}".encode("ascii")
                 ).hexdigest()[:15], 16)
-                await conn.execute("SELECT pg_advisory_xact_lock($1)", lock_key)
+                await conn.execute("SELECT pg_advisory_xact_lock($1::bigint)", lock_key)
                 existing = await conn.fetchrow(
                     """SELECT id,expires_at FROM pvpclub_temporary_roles
                        WHERE guild_id=$1 AND member_id=$2 AND role_id=$3
@@ -1159,7 +1163,10 @@ class SecurityCog(commands.Cog):
                     interaction.guild_id, member.id, role.id,
                 )
                 if existing:
-                    expiry = max(_utc(existing["expires_at"]) or now, now) + timedelta(seconds=seconds)
+                    expiry = min(
+                        max(_utc(existing["expires_at"]) or now, now) + timedelta(seconds=seconds),
+                        now + timedelta(seconds=MAX_TEMP_SECONDS),
+                    )
                     record_id = int(existing["id"])
                     action = "Temporary role extended"
                     await conn.execute(
