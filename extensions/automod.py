@@ -7,6 +7,9 @@ Ordinary profanity is deliberately not filtered.
 from __future__ import annotations
 
 import asyncio
+import base64
+import hashlib
+import aiohttp
 import logging
 import re
 import secrets
@@ -230,6 +233,7 @@ class AutoModEngine:
         self.macro_blocked_until: dict[tuple[int, int, int], float] = {}
         self.spam_cooldowns: dict[tuple[int, int], float] = {}
         self.ai_last_check: dict[tuple[int, int], float] = {}
+        self.ai_checked_images: dict[str, float] = {}
         self._ai_locks: dict[int, asyncio.Lock] = {}
 
     def _config(self, guild_id: int) -> dict:
@@ -251,54 +255,162 @@ class AutoModEngine:
         exempt_roles = {int(x) for x in config.get("immune_roles", []) if str(x).isdigit()}
         return any(role.id in exempt_roles for role in member.roles)
 
-    async def _ai_check(self, message: discord.Message) -> str | None:
+    async def _moderation_image_inputs(self, message: discord.Message) -> list[dict]:
+        """Read a small number of supported images in memory; never persist image bytes."""
+        if not self.bot.session or self.bot.session.closed:
+            return []
+        result = []
+        seen = set()
+        allowed_mimes = {"image/jpeg", "image/png", "image/webp", "image/gif"}
+        allowed_hosts = {"cdn.discordapp.com", "media.discordapp.net", "images-ext-1.discordapp.net"}
+        max_bytes = 8 * 1024 * 1024
+
+        async def add_bytes(raw: bytes, mime: str):
+            if not raw or len(raw) > max_bytes or mime not in allowed_mimes:
+                return
+            digest = hashlib.sha256(raw).hexdigest()
+            if digest in seen:
+                return
+            seen.add(digest)
+            if time.monotonic() - self.ai_checked_images.get(digest, 0.0) < 600:
+                return
+            self.ai_checked_images[digest] = time.monotonic()
+            import base64
+            data_url = "data:" + mime + ";base64," + base64.b64encode(raw).decode("ascii")
+            result.append({"type": "image_url", "image_url": {"url": data_url}})
+
+        for attachment in message.attachments[:3]:
+            mime = (attachment.content_type or "").split(";", 1)[0].casefold()
+            if mime not in allowed_mimes or attachment.size > max_bytes:
+                continue
+            try:
+                raw = await attachment.read(use_cached=True)
+                await add_bytes(raw, mime)
+            except (discord.HTTPException, asyncio.TimeoutError):
+                log.warning("Could not read image attachment %s for moderation", attachment.id)
+
+        image_urls = []
+        for item in message.embeds:
+            if item.image and item.image.url:
+                image_urls.append(item.image.url)
+            if item.thumbnail and item.thumbnail.url:
+                image_urls.append(item.thumbnail.url)
+        # Direct image URLs are accepted only from Discord's own media CDN.
+        for url in URL_RE.findall(message.content or ""):
+            image_urls.append(url.rstrip(".,!?)]}"))
+
+        for url in image_urls[:3]:
+            try:
+                parsed = urlsplit(url)
+                if parsed.scheme != "https" or (parsed.hostname or "").casefold() not in allowed_hosts:
+                    continue
+                async with self.bot.session.get(
+                    url, allow_redirects=False, timeout=aiohttp.ClientTimeout(total=4)
+                ) as response:
+                    if response.status != 200:
+                        continue
+                    mime = response.headers.get("Content-Type", "").split(";", 1)[0].casefold()
+                    if mime not in allowed_mimes:
+                        continue
+                    length = response.content_length
+                    if length is not None and length > max_bytes:
+                        continue
+                    raw = await response.content.read(max_bytes + 1)
+                    if len(raw) <= max_bytes:
+                        await add_bytes(raw, mime)
+            except (aiohttp.ClientError, asyncio.TimeoutError, ValueError):
+                log.info("Skipping inaccessible or invalid Discord image URL during moderation")
+        return result[:3]
+
+    async def _ai_check(self, message: discord.Message) -> tuple[str, str] | None:
         api_key = __import__("os").getenv("OPENAI_API_KEY")
         if not api_key or not self.bot.session or self.bot.session.closed:
             return None
+        config = self._config(message.guild.id)
+        nsfw_enabled = bool(config.get("nsfw_enabled", False))
         text = (message.content or "").strip()
-        if len(text) < 18:
+        images = await self._moderation_image_inputs(message) if nsfw_enabled else []
+        modules = config.get("modules", {}) if isinstance(config.get("modules", {}), dict) else {}
+        ai_enabled = modules.get("ai", True) is not False
+        if not images and (not ai_enabled or len(text) < 18):
             return None
+        if not images and not text:
+            return None
+
         key = (message.guild.id, message.author.id)
         now = time.monotonic()
-        # Avoid spending requests repeatedly on the same user; deterministic local rules still run each message.
-        if now - self.ai_last_check.get(key, 0.0) < 8:
+        if not images and now - self.ai_last_check.get(key, 0.0) < 8:
             return None
         self.ai_last_check[key] = now
+        inputs = []
+        if text:
+            inputs.append({"type": "text", "text": text[:4000]})
+        inputs.extend(images)
         lock = self._ai_locks.setdefault(message.guild.id, asyncio.Lock())
         async with lock:
             try:
                 async with self.bot.session.post(
                     "https://api.openai.com/v1/moderations",
-                    headers={"Authorization": f"Bearer {api_key}"},
-                    json={"model": "omni-moderation-latest", "input": text[:4000]},
-                    timeout=__import__("aiohttp").ClientTimeout(total=4.5),
+                    headers={"Authorization": "Bearer " + api_key},
+                    json={"model": "omni-moderation-latest", "input": inputs},
+                    timeout=aiohttp.ClientTimeout(total=8),
                 ) as response:
+                    if response.status == 429:
+                        log.warning("OpenAI moderation rate limited guild %s", message.guild.id)
+                        return None
                     if response.status != 200:
                         log.warning("OpenAI moderation returned HTTP %s", response.status)
                         return None
                     payload = await response.json(content_type=None)
-            except Exception as exc:
-                log.debug("Optional AI moderation unavailable: %s", exc)
+            except (aiohttp.ClientError, asyncio.TimeoutError, ValueError):
+                log.exception("Optional OpenAI moderation request failed")
                 return None
+
         results = payload.get("results") if isinstance(payload, dict) else None
         if not isinstance(results, list) or not results or not isinstance(results[0], dict):
             return None
-        scores = results[0].get("category_scores", {})
+        result = results[0]
+        scores = result.get("category_scores", {})
+        applied = result.get("category_applied_input_types", {})
         if not isinstance(scores, dict):
             return None
+
+        if nsfw_enabled:
+            # The documented moderation model supports sexual/minors for text only.
+            # Never infer this category from image scores or send suspected CSAM to this endpoint.
+            minor_types = applied.get("sexual/minors", []) if isinstance(applied, dict) else []
+            try:
+                minor_score = float(scores.get("sexual/minors", 0.0))
+            except (TypeError, ValueError):
+                minor_score = 0.0
+            minor_threshold = float(config.get("nsfw_minor_threshold", 0.60))
+            if "text" in minor_types and minor_score >= minor_threshold:
+                return "critical", "Sexual content involving a minor (highest severity)"
+
+            try:
+                sexual_score = float(scores.get("sexual", 0.0))
+            except (TypeError, ValueError):
+                sexual_score = 0.0
+            sexual_threshold = float(config.get("nsfw_sexual_threshold", 0.90))
+            sexual_types = applied.get("sexual", []) if isinstance(applied, dict) else []
+            if sexual_types and sexual_score >= sexual_threshold:
+                source = "image" if "image" in sexual_types else "text"
+                return "normal", "Explicit sexual content detected in " + source
+
+        if not ai_enabled:
+            return None
         thresholds = {
-            _text_from_codepoints((104, 97, 116, 101)): 0.90,
-            _text_from_codepoints((104, 97, 116, 101, 47, 116, 104, 114, 101, 97, 116, 101, 110, 105, 110, 103)): 0.86,
-            _text_from_codepoints((104, 97, 114, 97, 115, 115, 109, 101, 110, 116, 47, 116, 104, 114, 101, 97, 116, 101, 110, 105, 110, 103)): 0.90,
-            _text_from_codepoints((115, 101, 108, 102, 45, 104, 97, 114, 109, 47, 105, 110, 116, 101, 110, 116)): 0.90,
-            _text_from_codepoints((115, 101, 108, 102, 45, 104, 97, 114, 109, 47, 105, 110, 115, 116, 114, 117, 99, 116, 105, 111, 110, 115)): 0.90,
-            _text_from_codepoints((115, 101, 120, 117, 97, 108, 47, 109, 105, 110, 111, 114, 115)): 0.86,
-            _text_from_codepoints((118, 105, 111, 108, 101, 110, 99, 101, 47, 103, 114, 97, 112, 104, 105, 99)): 0.90
+            "hate": 0.90,
+            "hate/threatening": 0.86,
+            "harassment/threatening": 0.90,
+            "self-harm/intent": 0.90,
+            "self-harm/instructions": 0.90,
+            "violence/graphic": 0.90,
         }
         for category, threshold in thresholds.items():
             try:
                 if float(scores.get(category, 0.0)) >= threshold:
-                    return f"AI moderation: {category}"
+                    return "severe", "AI moderation: " + category
             except (TypeError, ValueError):
                 continue
         return None
@@ -664,10 +776,11 @@ class AutoModEngine:
             elif duplicate_count >= 9:
                 severity, reason = "spam", "Repeated copy-paste spam (9+ matching messages)"
 
-        if severity is None and modules.get("ai", True) is not False:
-            ai_reason = await self._ai_check(message)
-            if ai_reason:
-                severity, reason = "severe", ai_reason
+        config_nsfw = bool(config.get("nsfw_enabled", False))
+        if severity is None and (modules.get("ai", True) is not False or config_nsfw):
+            ai_result = await self._ai_check(message)
+            if ai_result:
+                severity, reason = ai_result
         if severity is None:
             return False
         if severity == "spam":
@@ -688,7 +801,6 @@ class AutoModCog(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
         self.engine = AutoModEngine(bot)
-        self.join_windows: dict[int, deque[float]] = defaultdict(deque)
         self.prune_windows.start()
 
     def cog_unload(self):
@@ -719,11 +831,6 @@ class AutoModCog(commands.Cog):
         for key, checked_at in list(self.engine.ai_last_check.items()):
             if now - checked_at > 120:
                 self.engine.ai_last_check.pop(key, None)
-        for guild_id, entries in list(self.join_windows.items()):
-            while entries and now - entries[0] > 10:
-                entries.popleft()
-            if not entries:
-                self.join_windows.pop(guild_id, None)
 
     @prune_windows.before_loop
     async def before_prune_windows(self):
@@ -768,28 +875,6 @@ class AutoModCog(commands.Cog):
             await self.bot.store.save()
             await ctx.reply(f"✅ Spam-channel mode is now **OFF** in {ctx.channel.mention}.")
 
-    @commands.Cog.listener()
-    async def on_member_join(self, member: discord.Member):
-        now = time.monotonic()
-        bucket = self.join_windows[member.guild.id]
-        while bucket and now - bucket[0] > 10:
-            bucket.popleft()
-        bucket.append(now)
-        config = self.engine._config(member.guild.id)
-        modules = config.get("modules", {}) if isinstance(config.get("modules", {}), dict) else {}
-        if modules.get("raid", True) is False:
-            return
-        if len(bucket) == 10:
-            channel_id = self.bot.store.data.get("logs_channels", {}).get(str(member.guild.id)) or self.bot.store.data.get("modlog_channels", {}).get(str(member.guild.id))
-            channel = member.guild.get_channel(int(channel_id)) if channel_id else None
-            if isinstance(channel, discord.TextChannel):
-                try:
-                    await channel.send(
-                        f"🚨 **Possible join raid:** 10 members joined within 10 seconds. Review new accounts and enable Discord AutoMod if needed.",
-                        allowed_mentions=discord.AllowedMentions.none(),
-                    )
-                except discord.HTTPException:
-                    log.warning("Could not post join-raid alert in guild %s", member.guild.id)
 
 
 # The administration interface is a slash-command group with focused subcommands.
@@ -932,6 +1017,200 @@ async def automod_setlog(interaction: discord.Interaction, channel: discord.Text
     _bot.store.data.setdefault("modlog_channels", {})[str(interaction.guild_id)] = str(channel.id)
     await _bot.store.save()
     await interaction.response.send_message(f"AutoMod logs will be sent to {channel.mention}.", ephemeral=True)
+
+
+# NSFW configuration is a sub-group of the existing AutoMod command group.
+nsfw_group = app_commands.Group(name="nsfw", description="Configure explicit-content filtering")
+
+
+def _actual_owner(interaction: discord.Interaction) -> bool:
+    return bool(interaction.guild and interaction.user.id == interaction.guild.owner_id)
+
+
+@nsfw_group.command(name="on", description="Enable explicit text and image filtering.")
+async def automod_nsfw_on(interaction: discord.Interaction):
+    if not _actual_owner(interaction):
+        await interaction.response.send_message("Only the actual server owner can configure NSFW filtering.", ephemeral=True)
+        return
+    config = _bot.store.data.setdefault("automod_config", {}).setdefault(str(interaction.guild_id), {})
+    if not interaction.client.session or not __import__("os").getenv("OPENAI_API_KEY"):
+        await interaction.response.send_message("Set OPENAI_API_KEY in Render before enabling AI text and image filtering.", ephemeral=True)
+        return
+    config["nsfw_enabled"] = True
+    await _bot.store.save()
+    await interaction.response.send_message("✅ NSFW text and image filtering is enabled.", ephemeral=True)
+
+
+@nsfw_group.command(name="off", description="Disable explicit text and image filtering.")
+async def automod_nsfw_off(interaction: discord.Interaction):
+    if not _actual_owner(interaction):
+        await interaction.response.send_message("Only the actual server owner can configure NSFW filtering.", ephemeral=True)
+        return
+    config = _bot.store.data.setdefault("automod_config", {}).setdefault(str(interaction.guild_id), {})
+    config["nsfw_enabled"] = False
+    await _bot.store.save()
+    await interaction.response.send_message("NSFW text and image filtering is disabled. Other AutoMod modules remain active.", ephemeral=True)
+
+
+@nsfw_group.command(name="status", description="Inspect explicit-content filtering configuration.")
+async def automod_nsfw_status(interaction: discord.Interaction):
+    if not _actual_owner(interaction):
+        await interaction.response.send_message("Only the actual server owner can inspect NSFW filtering.", ephemeral=True)
+        return
+    config = _bot.store.data.get("automod_config", {}).get(str(interaction.guild_id), {})
+    log_id = _bot.store.data.get("modlog_channels", {}).get(str(interaction.guild_id))
+    log_channel = interaction.guild.get_channel(int(log_id)) if log_id else None
+    key_ready = bool(__import__("os").getenv("OPENAI_API_KEY") and _bot.session and not _bot.session.closed)
+    e = discord.Embed(title="NSFW AutoMod status", color=discord.Color.blurple())
+    e.add_field(name="Filtering", value="Enabled" if config.get("nsfw_enabled") else "Disabled", inline=True)
+    e.add_field(name="OpenAI service", value="Configured" if key_ready else "OPENAI_API_KEY missing", inline=True)
+    e.add_field(name="Moderation log", value=log_channel.mention if isinstance(log_channel, discord.TextChannel) else "Not configured", inline=True)
+    e.add_field(name="Explicit-content threshold", value=str(config.get("nsfw_sexual_threshold", 0.90)), inline=True)
+    e.add_field(name="Minors text threshold", value=str(config.get("nsfw_minor_threshold", 0.60)), inline=True)
+    e.add_field(name="Images", value="Discord image attachments and supported Discord CDN embeds; maximum 8 MiB each.", inline=False)
+    e.set_footer(text="The standard moderation model's sexual/minors category is text-only.")
+    await interaction.response.send_message(embed=e, ephemeral=True)
+
+
+@nsfw_group.command(name="setup", description="Set the moderation log and detection thresholds.")
+@app_commands.describe(log_channel="Channel for moderation actions", sexual_threshold="Confidence threshold for explicit sexual content", minors_threshold="Confidence threshold for sexual content involving minors in text")
+async def automod_nsfw_setup(
+    interaction: discord.Interaction,
+    log_channel: discord.TextChannel,
+    sexual_threshold: app_commands.Range[float, 0.50, 0.99] = 0.90,
+    minors_threshold: app_commands.Range[float, 0.30, 0.99] = 0.60,
+):
+    if not _actual_owner(interaction):
+        await interaction.response.send_message("Only the actual server owner can configure NSFW filtering.", ephemeral=True)
+        return
+    permissions = log_channel.permissions_for(interaction.guild.me)
+    if not permissions.view_channel or not permissions.send_messages or not permissions.embed_links:
+        await interaction.response.send_message("I need View Channel, Send Messages and Embed Links in the log channel.", ephemeral=True)
+        return
+    if not __import__("os").getenv("OPENAI_API_KEY"):
+        await interaction.response.send_message("Set OPENAI_API_KEY in Render first. I have not enabled NSFW filtering.", ephemeral=True)
+        return
+    config = _bot.store.data.setdefault("automod_config", {}).setdefault(str(interaction.guild_id), {})
+    config["nsfw_enabled"] = True
+    config["nsfw_sexual_threshold"] = float(sexual_threshold)
+    config["nsfw_minor_threshold"] = float(minors_threshold)
+    _bot.store.data.setdefault("modlog_channels", {})[str(interaction.guild_id)] = str(log_channel.id)
+    await _bot.store.save()
+    await interaction.response.send_message(
+        f"✅ NSFW filtering is enabled. Logs: {log_channel.mention}; explicit threshold: {sexual_threshold:.2f}; minors-text threshold: {minors_threshold:.2f}.",
+        ephemeral=True,
+    )
+
+
+automod_group.add_command(nsfw_group)
+
+
+async def _managed_native_rules(guild: discord.Guild):
+    rules = await guild.fetch_automod_rules()
+    config = _bot.store.data.setdefault("automod_config", {}).setdefault(str(guild.id), {})
+    stored = config.setdefault("native_rule_ids", {})
+    bot_id = _bot.user.id if _bot.user else 0
+    owned = {}
+    for rule in rules:
+        if rule.creator_id == bot_id and rule.name.startswith("PCE Managed "):
+            owned[rule.name] = rule
+    return rules, stored, owned
+
+
+@automod_group.command(name="sync", description="Synchronize PVPClub Empire managed native Discord AutoMod rules.")
+async def automod_native_sync(interaction: discord.Interaction):
+    if not _actual_owner(interaction):
+        await interaction.response.send_message("Only the actual server owner can synchronize native AutoMod rules.", ephemeral=True)
+        return
+    await interaction.response.defer(ephemeral=True, thinking=True)
+    guild = interaction.guild
+    if not guild.me.guild_permissions.manage_guild:
+        await interaction.followup.send("I need Manage Server to inspect and manage native AutoMod rules.", ephemeral=True)
+        return
+    try:
+        _, stored, owned = await _managed_native_rules(guild)
+        config = _bot.store.data.setdefault("automod_config", {}).setdefault(str(guild.id), {})
+        alert_id = _bot.store.data.get("modlog_channels", {}).get(str(guild.id))
+        alert_channel = guild.get_channel(int(alert_id)) if alert_id else None
+        actions = [discord.AutoModRuleAction(type=discord.AutoModRuleActionType.block_message)]
+        if isinstance(alert_channel, discord.TextChannel):
+            actions.append(discord.AutoModRuleAction(channel_id=alert_channel.id))
+        exempt_roles = [guild.get_role(int(x)) for x in config.get("immune_roles", []) if str(x).isdigit()]
+        exempt_channels = [guild.get_channel(int(x)) for x in config.get("immune_channels", []) if str(x).isdigit()]
+        exempt_roles = [x for x in exempt_roles if x][:20]
+        exempt_channels = [x for x in exempt_channels if x][:50]
+
+        desired = [
+            ("PCE Managed Spam", discord.AutoModTrigger(type=discord.AutoModRuleTriggerType.spam)),
+            ("PCE Managed Mentions", discord.AutoModTrigger(mention_limit=5, mention_raid_protection=True)),
+            ("PCE Managed Keywords", discord.AutoModTrigger(keyword_filter=config.get("native_keywords") or ["free nitro generator", "free nitro scam"])),
+        ]
+        changed = []
+        skipped = []
+        for name, trigger in desired:
+            rule = owned.get(name)
+            if rule is None:
+                # If a rule with the managed label belongs to another admin, never touch it.
+                conflict = next((r for r in await guild.fetch_automod_rules() if r.name == name), None)
+                if conflict is not None and conflict.creator_id != (_bot.user.id if _bot.user else 0):
+                    skipped.append(name + " (same-name rule owned by an administrator)")
+                    continue
+                rule = await guild.create_automod_rule(
+                    name=name,
+                    event_type=discord.AutoModRuleEventType.message_send,
+                    trigger=trigger,
+                    actions=actions,
+                    enabled=True,
+                    exempt_roles=exempt_roles,
+                    exempt_channels=exempt_channels,
+                    reason="PVPClub Empire managed native AutoMod synchronization",
+                )
+                changed.append("created " + name)
+            else:
+                await rule.edit(
+                    name=name,
+                    event_type=discord.AutoModRuleEventType.message_send,
+                    trigger=trigger,
+                    actions=actions,
+                    enabled=True,
+                    exempt_roles=exempt_roles,
+                    exempt_channels=exempt_channels,
+                    reason="PVPClub Empire managed native AutoMod synchronization",
+                )
+                changed.append("updated " + name)
+            stored[name] = str(rule.id)
+            await _bot.store.save()
+        await interaction.followup.send(
+            "✅ Native AutoMod sync finished.\n" +
+            ("\n".join(changed) if changed else "No managed rules changed.") +
+            ("\nSkipped: " + "; ".join(skipped) if skipped else ""),
+            ephemeral=True,
+        )
+    except (discord.Forbidden, discord.HTTPException, AttributeError, TypeError, ValueError):
+        log.exception("Native AutoMod synchronization failed in guild %s", guild.id)
+        await interaction.followup.send("Native AutoMod sync failed. Check Manage Server, discord.py version and channel/role configuration; details were logged.", ephemeral=True)
+
+
+@automod_group.command(name="native-status", description="Inspect PVPClub Empire native Discord AutoMod rules.")
+async def automod_native_status(interaction: discord.Interaction):
+    if not _actual_owner(interaction):
+        await interaction.response.send_message("Only the actual server owner can inspect native AutoMod.", ephemeral=True)
+        return
+    await interaction.response.defer(ephemeral=True, thinking=True)
+    try:
+        rules, stored, owned = await _managed_native_rules(interaction.guild)
+        lines = []
+        for name in ("PCE Managed Spam", "PCE Managed Mentions", "PCE Managed Keywords"):
+            rid = stored.get(name)
+            rule = next((r for r in rules if rid and str(r.id) == str(rid)), None)
+            if rule is None:
+                rule = owned.get(name)
+            state = "enabled" if rule and rule.enabled else "disabled" if rule else "not synchronized"
+            lines.append(name + ": " + state + (f" (ID {rule.id})" if rule else ""))
+        await interaction.followup.send("\n".join(lines), ephemeral=True)
+    except (discord.Forbidden, discord.HTTPException):
+        log.exception("Could not inspect native AutoMod in guild %s", interaction.guild_id)
+        await interaction.followup.send("I could not fetch native AutoMod rules. Check Manage Server.", ephemeral=True)
 
 
 async def setup(bot):
