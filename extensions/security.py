@@ -1583,9 +1583,10 @@ async def raid_enable(interaction):
     if not channel_id or not isinstance(interaction.guild.get_channel(int(channel_id)), discord.TextChannel):
         await interaction.response.send_message("Run /raid setup first and choose a verification channel.", ephemeral=True)
         return
+    await interaction.response.defer(ephemeral=True, thinking=True)
     config["enabled"] = True
     await cog.bot.store.save()
-    await interaction.response.send_message("✅ Raid Protection enabled.", ephemeral=True)
+    await interaction.followup.send("✅ Raid Protection enabled.", ephemeral=True)
 
 
 @raid_group.command(name="disable", description="Disable raid detection for future joins.")
@@ -1598,12 +1599,13 @@ async def raid_disable(interaction):
     if cog is None:
         await interaction.response.send_message("Security system unavailable.", ephemeral=True)
         return
+    await interaction.response.defer(ephemeral=True, thinking=True)
     config = cog.raid_config(interaction.guild.id)
     config["enabled"] = False
     config["active"] = False
     config["ends_at"] = None
     await cog.bot.store.save()
-    await interaction.response.send_message("Raid Protection disabled for new joins. Existing quarantined members remain quarantined until verified.", ephemeral=True)
+    await interaction.followup.send("Raid Protection disabled for new joins. Existing quarantined members remain quarantined until verified.", ephemeral=True)
 
 
 @raid_group.command(name="status", description="Inspect Raid Protection status.")
