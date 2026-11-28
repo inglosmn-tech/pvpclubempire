@@ -233,7 +233,6 @@ class AutoModEngine:
         self.macro_blocked_until: dict[tuple[int, int, int], float] = {}
         self.spam_cooldowns: dict[tuple[int, int], float] = {}
         self.ai_last_check: dict[tuple[int, int], float] = {}
-        self.ai_checked_images: dict[str, float] = {}
         self._ai_locks: dict[int, asyncio.Lock] = {}
 
     def _config(self, guild_id: int) -> dict:
@@ -255,12 +254,11 @@ class AutoModEngine:
         exempt_roles = {int(x) for x in config.get("immune_roles", []) if str(x).isdigit()}
         return any(role.id in exempt_roles for role in member.roles)
 
-    async def _moderation_image_inputs(self, message: discord.Message) -> tuple[list[dict], list[str]]:
+    async def _moderation_image_inputs(self, message: discord.Message) -> list[dict]:
         """Read a small number of supported images in memory; never persist image bytes."""
         if not self.bot.session or self.bot.session.closed:
-            return [], []
+            return []
         result = []
-        image_hashes = []
         seen = set()
         allowed_mimes = {"image/jpeg", "image/png", "image/webp", "image/gif"}
         allowed_hosts = {"cdn.discordapp.com", "media.discordapp.net", "images-ext-1.discordapp.net"}
@@ -273,12 +271,8 @@ class AutoModEngine:
             if digest in seen:
                 return
             seen.add(digest)
-            if time.monotonic() - self.ai_checked_images.get(digest, 0.0) < 600:
-                return
-            import base64
             data_url = "data:" + mime + ";base64," + base64.b64encode(raw).decode("ascii")
             result.append({"type": "image_url", "image_url": {"url": data_url}})
-            image_hashes.append(digest)
 
         for attachment in message.attachments[:3]:
             mime = (attachment.content_type or "").split(";", 1)[0].casefold()
@@ -321,7 +315,7 @@ class AutoModEngine:
                         await add_bytes(raw, mime)
             except (aiohttp.ClientError, asyncio.TimeoutError, ValueError):
                 log.info("Skipping inaccessible or invalid Discord image URL during moderation")
-        return result[:3], image_hashes[:3]
+        return result[:3]
 
     async def _ai_check(self, message: discord.Message) -> tuple[str, str] | None:
         api_key = __import__("os").getenv("OPENAI_API_KEY")
@@ -330,7 +324,7 @@ class AutoModEngine:
         config = self._config(message.guild.id)
         nsfw_enabled = bool(config.get("nsfw_enabled", False))
         text = (message.content or "").strip()
-        images, image_hashes = await self._moderation_image_inputs(message) if nsfw_enabled else ([], [])
+        images = await self._moderation_image_inputs(message) if nsfw_enabled else []
         modules = config.get("modules", {}) if isinstance(config.get("modules", {}), dict) else {}
         ai_enabled = modules.get("ai", True) is not False
         if not images and not text:
@@ -375,12 +369,6 @@ class AutoModEngine:
         applied = result.get("category_applied_input_types", {})
         if not isinstance(scores, dict):
             return None
-        # Cache only successfully completed moderation results. A 429 or an
-        # unavailable API must not suppress a later retry for the same image.
-        checked_at = time.monotonic()
-        for digest in image_hashes:
-            self.ai_checked_images[digest] = checked_at
-
         if nsfw_enabled:
             # The documented moderation model supports sexual/minors for text only.
             # Never infer this category from image scores or send suspected CSAM to this endpoint.
@@ -837,9 +825,6 @@ class AutoModCog(commands.Cog):
         for key, checked_at in list(self.engine.ai_last_check.items()):
             if now - checked_at > 120:
                 self.engine.ai_last_check.pop(key, None)
-        for digest, checked_at in list(self.engine.ai_checked_images.items()):
-            if now - checked_at > 600:
-                self.engine.ai_checked_images.pop(digest, None)
 
     @prune_windows.before_loop
     async def before_prune_windows(self):
