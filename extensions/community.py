@@ -492,7 +492,24 @@ class CommunityCog(commands.Cog):
         security = self.bot.get_cog("SecurityCog")
         quarantined = False
         if security:
-            quarantined = await security.handle_member_join(member)
+            try:
+                quarantined = bool(await security.handle_member_join(member))
+            except Exception:
+                log.exception("Security join handling failed for member %s in guild %s", member.id, member.guild.id)
+                quarantined = True
+                try:
+                    await security.owner_alert(
+                        member.guild,
+                        "Join security handler failed",
+                        f"Could not safely process new member {member} ({member.id}). Autoroles and welcome messages were skipped.",
+                    )
+                except Exception:
+                    log.exception("Could not notify the owner about a join-security failure.")
+                if member.bot:
+                    try:
+                        await member.kick(reason="PVPClub Empire could not safely process bot approval")
+                    except discord.HTTPException:
+                        log.exception("Could not fail-closed remove bot %s after security handler failure", member.id)
         if member.bot:
             await self._sync_meowking(member.guild)
             await self._log(member.guild, "Member joined", f"{member.mention} (\u0060{member.id}\u0060) joined the server.", member)
@@ -508,7 +525,7 @@ class CommunityCog(commands.Cog):
                     log.warning("Could not assign autorole in guild %s", member.guild.id)
         channel_id = self.bot.store.data.get("welcome_channels", {}).get(str(member.guild.id))
         channel = member.guild.get_channel(int(channel_id)) if channel_id else None
-        if isinstance(channel, discord.TextChannel):
+        if not quarantined and isinstance(channel, discord.TextChannel):
             e = make_embed("👋 Welcome!", f"Welcome {member.mention} to **{member.guild.name}**!\n\nPlease read the server rules, explore the channels, and enjoy your stay.")
             e.set_thumbnail(url=member.display_avatar.url)
             try:
@@ -522,7 +539,10 @@ class CommunityCog(commands.Cog):
     async def on_member_remove(self, member: discord.Member):
         security = self.bot.get_cog("SecurityCog")
         if security:
-            await security.handle_member_leave(member)
+            try:
+                await security.handle_member_leave(member)
+            except Exception:
+                log.exception("Could not clean up security state for departing member %s", member.id)
         await self._log(member.guild, "Member left", f"{member} (`{member.id}`) left the server.", member)
         await self._sync_meowking(member.guild)
 
