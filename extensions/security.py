@@ -428,6 +428,11 @@ class SecurityCog(commands.Cog):
 
     async def handle_bot_join(self, member: discord.Member):
         guild = member.guild
+        # Bot approval is opt-in. Do not affect existing/new bots until the
+        # actual owner has configured the dedicated review channel.
+        configured_channel = self.bot.store.data.get("bot_approval_channels", {}).get(str(guild.id))
+        if not configured_channel:
+            return
         pool = self.pool()
         if pool is None:
             await self.owner_alert(guild, "Bot approval unavailable", f"{member} ({member.id}) joined, but PostgreSQL is unavailable.")
@@ -442,6 +447,14 @@ class SecurityCog(commands.Cog):
             guild.id, member.id,
         )
         if row and row["status"] == "approved":
+            # If a previous process stopped after recording approval but before
+            # restoring the saved overwrites, finish that restoration on rejoin.
+            active = await pool.fetchval(
+                "SELECT 1 FROM pvpclub_active_quarantines WHERE guild_id=$1 AND member_id=$2 AND scope='bot'",
+                guild.id, member.id,
+            )
+            if active and not await self.restore_quarantine(guild, member, "bot"):
+                await self.owner_alert(guild, "Approved bot is still quarantined", f"Could not restore all saved permissions for {member} ({member.id}).")
             return
         if row and row["status"] == "rejected":
             try:
@@ -856,7 +869,8 @@ class SecurityCog(commands.Cog):
 
     @tasks.loop(seconds=30)
     async def raid_worker(self):
-        if self.pool() is None:
+        pool = self.pool()
+        if pool is None:
             return
         now = discord.utils.utcnow()
         try:
@@ -872,6 +886,82 @@ class SecurityCog(commands.Cog):
                     await self.restore_quarantine(guild, member, "raid")
         except Exception:
             log.exception("Could not recover completed verifications after restart.")
+        # Reconcile bot approval state after a restart. An approved bot with
+        # leftover overwrites is restored; pending bots are kept restricted.
+        try:
+            bot_rows = await pool.fetch(
+                """SELECT q.guild_id,q.member_id,a.status,q.bypass_channel_id
+                   FROM pvpclub_active_quarantines q
+                   LEFT JOIN pvpclub_bot_approvals a
+                     ON a.guild_id=q.guild_id AND a.bot_id=q.member_id
+                   WHERE q.scope='bot' LIMIT 100"""
+            )
+            for item in bot_rows:
+                guild = self.bot.get_guild(int(item["guild_id"]))
+                if guild is None:
+                    continue
+                member = guild.get_member(int(item["member_id"]))
+                if member is None:
+                    try:
+                        member = await guild.fetch_member(int(item["member_id"]))
+                    except discord.NotFound:
+                        await pool.execute(
+                            "DELETE FROM pvpclub_active_quarantines WHERE guild_id=$1 AND member_id=$2 AND scope='bot'",
+                            guild.id, int(item["member_id"]),
+                        )
+                        await pool.execute(
+                            "DELETE FROM pvpclub_quarantine_overwrites WHERE guild_id=$1 AND member_id=$2 AND scope='bot'",
+                            guild.id, int(item["member_id"]),
+                        )
+                        continue
+                    except discord.HTTPException:
+                        continue
+                status = str(item["status"] or "pending")
+                if status == "approved":
+                    await self.restore_quarantine(guild, member, "bot")
+                elif status == "rejected":
+                    try:
+                        await member.kick(reason="PVPClub Empire recovered a rejected bot after restart")
+                        await pool.execute(
+                            "DELETE FROM pvpclub_active_quarantines WHERE guild_id=$1 AND member_id=$2 AND scope='bot'",
+                            guild.id, member.id,
+                        )
+                        await pool.execute(
+                            "DELETE FROM pvpclub_quarantine_overwrites WHERE guild_id=$1 AND member_id=$2 AND scope='bot'",
+                            guild.id, member.id,
+                        )
+                    except discord.HTTPException:
+                        log.exception("Could not finish rejecting bot %s after restart", member.id)
+                        await self.owner_alert(guild, "Rejected bot still present", f"Could not finish kicking {member} ({member.id}) after restart.")
+                else:
+                    approval_id = self.bot.store.data.get("bot_approval_channels", {}).get(str(guild.id))
+                    if not await self.quarantine(guild, member, "bot", int(approval_id) if approval_id else None):
+                        await self.owner_alert(guild, "Pending bot quarantine recovery failed", f"Could not re-apply quarantine to {member} ({member.id}).")
+        except Exception:
+            log.exception("Could not reconcile pending bot approval quarantines.")
+
+        # Verification panels whose database record exists but panel send was
+        # interrupted are recreated after a restart.
+        try:
+            missing_panels = await pool.fetch(
+                """SELECT guild_id,member_id FROM pvpclub_raid_verifications
+                   WHERE status='pending' AND panel_message_id IS NULL LIMIT 100"""
+            )
+            for item in missing_panels:
+                guild = self.bot.get_guild(int(item["guild_id"]))
+                member = guild.get_member(int(item["member_id"])) if guild else None
+                config = self.raid_config(guild.id) if guild else {}
+                channel_id = config.get("verification_channel_id")
+                channel = guild.get_channel(int(channel_id)) if guild and channel_id else None
+                if guild and member and isinstance(channel, discord.TextChannel):
+                    try:
+                        await self.create_challenge(guild, member, channel)
+                    except Exception:
+                        log.exception("Could not recover verification panel for member %s", member.id)
+
+        except Exception:
+            log.exception("Could not recover verification panels.")
+
         for guild in self.bot.guilds:
             config = self.raid_config(guild.id)
             ends = _utc(config.get("ends_at"))
