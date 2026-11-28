@@ -904,7 +904,6 @@ async def automod_toggle(interaction: discord.Interaction, enabled: bool):
     app_commands.Choice(name="Mass mentions", value="mentions"),
     app_commands.Choice(name="Flood and duplicate spam", value="spam"),
     app_commands.Choice(name="Optional AI moderation", value="ai"),
-    app_commands.Choice(name="Join-raid alerts", value="raid"),
 ])
 async def automod_module(interaction: discord.Interaction, module: app_commands.Choice[str], enabled: bool):
     if not _admin(interaction):
@@ -1118,10 +1117,13 @@ async def _managed_native_rules(guild: discord.Guild):
     stored = config.setdefault("native_rule_ids", {})
     bot_id = _bot.user.id if _bot.user else 0
     owned = {}
+    owned_by_id = {}
     for rule in rules:
-        if rule.creator_id == bot_id and rule.name.startswith("PCE Managed "):
-            owned[rule.name] = rule
-    return rules, stored, owned
+        if rule.creator_id == bot_id:
+            owned_by_id[str(rule.id)] = rule
+            if rule.name.startswith("PCE Managed "):
+                owned[rule.name] = rule
+    return rules, stored, owned, owned_by_id
 
 
 @automod_group.command(name="sync", description="Synchronize PVPClub Empire managed native Discord AutoMod rules.")
@@ -1135,13 +1137,16 @@ async def automod_native_sync(interaction: discord.Interaction):
         await interaction.followup.send("I need Manage Server to inspect and manage native AutoMod rules.", ephemeral=True)
         return
     try:
-        _, stored, owned = await _managed_native_rules(guild)
+        _, stored, owned, owned_by_id = await _managed_native_rules(guild)
         config = _bot.store.data.setdefault("automod_config", {}).setdefault(str(guild.id), {})
         alert_id = _bot.store.data.get("modlog_channels", {}).get(str(guild.id))
         alert_channel = guild.get_channel(int(alert_id)) if alert_id else None
         actions = [discord.AutoModRuleAction(type=discord.AutoModRuleActionType.block_message)]
         if isinstance(alert_channel, discord.TextChannel):
-            actions.append(discord.AutoModRuleAction(channel_id=alert_channel.id))
+            actions.append(discord.AutoModRuleAction(
+                type=discord.AutoModRuleActionType.send_alert_message,
+                channel_id=alert_channel.id,
+            ))
         exempt_roles = [guild.get_role(int(x)) for x in config.get("immune_roles", []) if str(x).isdigit()]
         exempt_channels = [guild.get_channel(int(x)) for x in config.get("immune_channels", []) if str(x).isdigit()]
         exempt_roles = [x for x in exempt_roles if x][:20]
@@ -1155,7 +1160,7 @@ async def automod_native_sync(interaction: discord.Interaction):
         changed = []
         skipped = []
         for name, trigger in desired:
-            rule = owned.get(name)
+            rule = owned.get(name) or owned_by_id.get(str(stored.get(name, "")))
             if rule is None:
                 # If a rule with the managed label belongs to another admin, never touch it.
                 conflict = next((r for r in await guild.fetch_automod_rules() if r.name == name), None)
@@ -1205,13 +1210,13 @@ async def automod_native_status(interaction: discord.Interaction):
         return
     await interaction.response.defer(ephemeral=True, thinking=True)
     try:
-        rules, stored, owned = await _managed_native_rules(interaction.guild)
+        rules, stored, owned, owned_by_id = await _managed_native_rules(interaction.guild)
         lines = []
         for name in ("PCE Managed Spam", "PCE Managed Mentions", "PCE Managed Keywords"):
             rid = stored.get(name)
             rule = next((r for r in rules if rid and str(r.id) == str(rid)), None)
             if rule is None:
-                rule = owned.get(name)
+                rule = owned.get(name) or owned_by_id.get(str(rid or ""))
             state = "enabled" if rule and rule.enabled else "disabled" if rule else "not synchronized"
             lines.append(name + ": " + state + (f" (ID {rule.id})" if rule else ""))
         await interaction.followup.send("\n".join(lines), ephemeral=True)
