@@ -280,7 +280,13 @@ class SecurityCog(commands.Cog):
         if pool is None:
             raise RuntimeError("PostgreSQL unavailable; refusing non-persistent quarantine.")
         overwrite = channel.overwrites_for(member)
-        original = {name: getattr(overwrite, name) for name in LOCKED_PERMISSIONS if hasattr(overwrite, name)}
+        # Snapshot the complete member overwrite, not only the bits we lock.
+        # This preserves unrelated existing channel permissions on release.
+        original = {
+            name: getattr(overwrite, name)
+            for name in discord.Permissions.VALID_FLAGS
+            if hasattr(overwrite, name)
+        }
         await pool.execute(
             """INSERT INTO pvpclub_quarantine_overwrites
                (guild_id,member_id,scope,channel_id,permissions)
@@ -347,7 +353,13 @@ class SecurityCog(commands.Cog):
                     for name, value in saved.items():
                         if hasattr(overwrite, name):
                             setattr(overwrite, name, value)
-                    if any(value is not None for value in saved.values()):
+                    # Also handle older partial snapshots safely: only delete the
+                    # member overwrite when every permission is actually unset.
+                    has_any_overwrite = any(
+                        getattr(overwrite, name, None) is not None
+                        for name in discord.Permissions.VALID_FLAGS
+                    )
+                    if has_any_overwrite:
                         await channel.set_permissions(member, overwrite=overwrite, reason=f"PVPClub Empire {scope} quarantine lifted")
                     else:
                         await channel.set_permissions(member, overwrite=None, reason=f"PVPClub Empire {scope} quarantine lifted")
@@ -847,7 +859,7 @@ class SecurityCog(commands.Cog):
                 guild, "Raid protection activated", "New member join wave", guild.id,
                 "PVPClub Empire", None,
                 f"{len(bucket)} humans joined within {window} seconds (trigger: {config['threshold']}).",
-                details=f"Verification channel: {channel.mention}", color=0xFFB347,
+                details=f"Verification channel: {channel.mention if isinstance(channel, discord.TextChannel) else 'Unavailable'}", color=0xFFB347,
             )
             await self.owner_alert(guild, "Raid Protection activated", f"{len(bucket)} members joined in {window} seconds. New human arrivals are being verified in {channel.mention}.")
         elif active:
