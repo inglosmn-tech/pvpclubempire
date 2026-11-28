@@ -199,8 +199,8 @@ class SecurityCog(commands.Cog):
                 expires_at TIMESTAMPTZ NOT NULL, reason TEXT NOT NULL DEFAULT '',
                 status TEXT NOT NULL DEFAULT 'active', attempts INTEGER NOT NULL DEFAULT 0,
                 retry_after TIMESTAMPTZ, last_error TEXT, updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW())""",
-            """CREATE UNIQUE INDEX IF NOT EXISTS pvpclub_temporary_roles_active_uq
-                ON pvpclub_temporary_roles (guild_id,member_id,role_id) WHERE status='active'""",
+            """CREATE UNIQUE INDEX IF NOT EXISTS pvpclub_temporary_roles_active_or_granting_uq
+                ON pvpclub_temporary_roles (guild_id,member_id,role_id) WHERE status IN ('active','granting')""",
             """CREATE INDEX IF NOT EXISTS pvpclub_temporary_roles_expiry_idx
                 ON pvpclub_temporary_roles (expires_at) WHERE status='active'""",
         ]
@@ -401,19 +401,29 @@ class SecurityCog(commands.Cog):
         if not bot_perms.manage_roles or not perms.view_channel or not perms.send_messages or not perms.embed_links:
             await ctx.reply("I need Manage Roles and View Channel, Send Messages and Embed Links in that channel.", mention_author=False)
             return
+
+        status_message = await ctx.reply("Scanning existing members so their current bots can be grandfathered in...", mention_author=False)
+        existing_bots = []
+        try:
+            async for existing in ctx.guild.fetch_members(limit=None):
+                if existing.bot:
+                    existing_bots.append(existing.id)
+        except (discord.Forbidden, discord.HTTPException):
+            await status_message.edit(
+                content="I couldn't scan every existing member. Enable the Server Members Intent and check my access, then run this setup again. Bot approval was not enabled."
+            )
+            return
+
         self.config("bot_approval_channels")[str(ctx.guild.id)] = channel.id
         await self.bot.store.save()
-        # Existing bots are deliberately grandfathered when setup is first run.
-        for existing in ctx.guild.members:
-            if existing.bot:
-                await self.pool().execute(
-                    """INSERT INTO pvpclub_bot_approvals (guild_id,bot_id,status,approved_by,decided_at)
-                       VALUES ($1,$2,'approved',$3,NOW()) ON CONFLICT (guild_id,bot_id) DO NOTHING""",
-                    ctx.guild.id, existing.id, ctx.guild.owner_id,
-                )
-        await ctx.reply(
-            f"✅ Bot approval is configured in {channel.mention}. Existing bots have been grandfathered in.",
-            mention_author=False,
+        for bot_id in existing_bots:
+            await self.pool().execute(
+                """INSERT INTO pvpclub_bot_approvals (guild_id,bot_id,status,approved_by,decided_at)
+                   VALUES ($1,$2,'approved',$3,NOW()) ON CONFLICT (guild_id,bot_id) DO NOTHING""",
+                ctx.guild.id, bot_id, ctx.guild.owner_id,
+            )
+        await status_message.edit(
+            content=f"✅ Bot approval is configured in {channel.mention}. {len(existing_bots)} existing bots were grandfathered in."
         )
 
     async def handle_bot_join(self, member: discord.Member):
@@ -518,31 +528,61 @@ class SecurityCog(commands.Cog):
                 return False, "That bot has already left the server."
             except discord.HTTPException:
                 return False, "I could not fetch that bot. Please try again."
+
         if approved:
-            if not await self.restore_quarantine(guild, member, "bot"):
-                await self.owner_alert(guild, "Bot approval could not finish", f"{member} ({bot_id}) remains quarantined because permission restoration failed.")
-                return False, "I could not restore every saved permission. The bot remains quarantined."
             result = await pool.execute(
                 """UPDATE pvpclub_bot_approvals SET status='approved',approved_by=$3,decided_at=NOW()
                    WHERE guild_id=$1 AND bot_id=$2 AND status='pending'""",
                 guild.id, bot_id, actor.id,
             )
             if result.endswith(" 0"):
-                await self.quarantine(guild, member, "bot", None)
-                return False, "The approval state changed; the bot was re-quarantined."
-            await self.modlog(guild, "Bot approved", str(member), bot_id, str(actor), actor.id, "Approved by the actual server owner. No additional permissions were granted.", color=0x57D69A)
+                return False, "The approval state changed before this decision could be saved."
+            if not await self.restore_quarantine(guild, member, "bot"):
+                await pool.execute(
+                    """UPDATE pvpclub_bot_approvals SET status='pending',approved_by=NULL,decided_at=NULL
+                       WHERE guild_id=$1 AND bot_id=$2 AND status='approved' AND approved_by=$3""",
+                    guild.id, bot_id, actor.id,
+                )
+                approval_id = self.bot.store.data.get("bot_approval_channels", {}).get(str(guild.id))
+                await self.quarantine(guild, member, "bot", int(approval_id) if approval_id else None)
+                await self.owner_alert(guild, "Bot approval could not finish", f"{member} ({bot_id}) remains quarantined because permission restoration failed.")
+                return False, "I could not restore every saved permission. The bot remains quarantined."
+            await self.modlog(
+                guild, "Bot approved", str(member), bot_id, str(actor), actor.id,
+                "Approved by the actual server owner. No additional permissions were granted.",
+                color=0x57D69A,
+            )
             return True, f"✅ {member} approved. Its previous channel permissions were restored; no new permissions were granted."
+
+        result = await pool.execute(
+            """UPDATE pvpclub_bot_approvals SET status='rejected',approved_by=$3,decided_at=NOW()
+               WHERE guild_id=$1 AND bot_id=$2 AND status='pending'""",
+            guild.id, bot_id, actor.id,
+        )
+        if result.endswith(" 0"):
+            return False, "The approval state changed before this decision could be saved."
         try:
             await member.kick(reason=f"Rejected by server owner {actor} ({actor.id})")
         except discord.HTTPException:
             log.exception("Could not kick rejected bot %s", bot_id)
+            await pool.execute(
+                """UPDATE pvpclub_bot_approvals SET status='pending',approved_by=NULL,decided_at=NULL
+                   WHERE guild_id=$1 AND bot_id=$2 AND status='rejected' AND approved_by=$3""",
+                guild.id, bot_id, actor.id,
+            )
             return False, "I could not kick that bot. Check Kick Members and role hierarchy; it remains pending."
         await pool.execute(
-            "UPDATE pvpclub_bot_approvals SET status='rejected',approved_by=$3,decided_at=NOW() WHERE guild_id=$1 AND bot_id=$2 AND status='pending'",
-            guild.id, bot_id, actor.id,
+            "DELETE FROM pvpclub_active_quarantines WHERE guild_id=$1 AND member_id=$2 AND scope='bot'",
+            guild.id, bot_id,
         )
-        await self.restore_quarantine(guild, member, "bot")
-        await self.modlog(guild, "Bot rejected and kicked", str(member), bot_id, str(actor), actor.id, "Rejected by the actual server owner.")
+        await pool.execute(
+            "DELETE FROM pvpclub_quarantine_overwrites WHERE guild_id=$1 AND member_id=$2 AND scope='bot'",
+            guild.id, bot_id,
+        )
+        await self.modlog(
+            guild, "Bot rejected and kicked", str(member), bot_id, str(actor), actor.id,
+            "Rejected by the actual server owner.",
+        )
         return True, f"✅ {member} was rejected and kicked."
 
     def raid_config(self, guild_id: int) -> dict:
@@ -666,7 +706,12 @@ class SecurityCog(commands.Cog):
                 continue
             ok = await self.quarantine(guild, candidate, "raid", channel.id)
             if not ok:
-                await self.owner_alert(guild, "RAID QUARANTINE FAILED", f"Could not fully restrict {candidate} ({candidate.id}). Check Manage Roles and channel overwrites immediately.")
+                await self.owner_alert(guild, "RAID QUARANTINE FAILED", f"Could not fully restrict {candidate} ({candidate.id}). I am attempting to remove the member so they cannot bypass verification. Check Manage Roles and channel overwrites.")
+                try:
+                    await candidate.kick(reason="PVPClub Empire could not safely enforce raid quarantine")
+                    await self.modlog(guild, "Member removed after quarantine failure", str(candidate), candidate.id, "PVPClub Empire", None, "Could not safely apply verification restrictions.")
+                except discord.HTTPException:
+                    log.exception("Could not fail-closed remove unquarantinable member %s", candidate.id)
                 continue
             try:
                 await self.create_challenge(guild, candidate, channel)
@@ -732,6 +777,10 @@ class SecurityCog(commands.Cog):
                     )
                 else:
                     status = "correct"
+                    await conn.execute(
+                        "UPDATE pvpclub_raid_verifications SET status='verified',verified_at=NOW() WHERE guild_id=$1 AND member_id=$2 AND status='pending'",
+                        guild.id, user.id,
+                    )
         if status != "correct":
             if status == "failed":
                 await self.modlog(guild, "Human verification failed", str(user), user.id, "PVPClub Empire", None, "All verification attempts were used.")
@@ -744,19 +793,18 @@ class SecurityCog(commands.Cog):
             try:
                 member = await guild.fetch_member(user.id)
             except discord.HTTPException:
-                return False, "I could not fetch your member record. Try again."
+                return False, "I could not fetch your member record. Your verification is saved; contact a moderator if access is not restored."
         if not await self.restore_quarantine(guild, member, "raid"):
-            await self.owner_alert(guild, "Verification permission restore failed", f"{member} ({member.id}) remains under quarantine.")
-            return False, "I could not restore all permissions. You remain quarantined; try again shortly."
-        try:
             await pool.execute(
-                "UPDATE pvpclub_raid_verifications SET status='verified',verified_at=NOW() WHERE guild_id=$1 AND member_id=$2 AND status='pending'",
+                "UPDATE pvpclub_raid_verifications SET status='pending',verified_at=NULL WHERE guild_id=$1 AND member_id=$2 AND status='verified'",
                 guild.id, user.id,
             )
-        except Exception:
-            log.exception("Could not persist verification success for %s", user.id)
-            await self.quarantine(guild, member, "raid", self.raid_config(guild.id).get("verification_channel_id"))
-            return False, "I could not save verification. Your access has been restricted again."
+            await self.quarantine(
+                guild, member, "raid",
+                int(self.raid_config(guild.id).get("verification_channel_id", 0)) or None,
+            )
+            await self.owner_alert(guild, "Verification permission restore failed", f"{member} ({member.id}) remains under quarantine.")
+            return False, "I could not restore all permissions. You remain quarantined; try again shortly."
         await self.modlog(guild, "Member verified", str(member), member.id, "PVPClub Empire", None, "Completed the arithmetic verification.", color=0x57D69A)
         await self.update_verification_panel(guild, user.id, True, "✅ Verified")
         return True, "✅ Verification successful. Your normal server permissions have been restored."
@@ -787,6 +835,19 @@ class SecurityCog(commands.Cog):
         if self.pool() is None:
             return
         now = discord.utils.utcnow()
+        try:
+            interrupted = await pool.fetch(
+                """SELECT q.guild_id,q.member_id FROM pvpclub_active_quarantines q
+                   JOIN pvpclub_raid_verifications v ON v.guild_id=q.guild_id AND v.member_id=q.member_id
+                   WHERE q.scope='raid' AND v.status='verified' LIMIT 100"""
+            )
+            for item in interrupted:
+                guild = self.bot.get_guild(int(item["guild_id"]))
+                member = guild.get_member(int(item["member_id"])) if guild else None
+                if guild and member:
+                    await self.restore_quarantine(guild, member, "raid")
+        except Exception:
+            log.exception("Could not recover completed verifications after restart.")
         for guild in self.bot.guilds:
             config = self.raid_config(guild.id)
             ends = _utc(config.get("ends_at"))
