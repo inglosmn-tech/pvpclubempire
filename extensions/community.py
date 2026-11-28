@@ -510,6 +510,12 @@ class CommunityCog(commands.Cog):
                         await member.kick(reason="PVPClub Empire could not safely process bot approval")
                     except discord.HTTPException:
                         log.exception("Could not fail-closed remove bot %s after security handler failure", member.id)
+                elif security.raid_config(member.guild.id).get("active"):
+                    # Never let a database/API exception bypass an active raid quarantine.
+                    try:
+                        await member.kick(reason="PVPClub Empire could not safely process active raid verification")
+                    except discord.HTTPException:
+                        log.exception("Could not fail-closed remove member %s after raid handler failure", member.id)
         if member.bot:
             await self._sync_meowking(member.guild)
             await self._log(member.guild, "Member joined", f"{member.mention} (\u0060{member.id}\u0060) joined the server.", member)
