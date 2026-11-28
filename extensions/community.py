@@ -489,8 +489,17 @@ class CommunityCog(commands.Cog):
 
     @commands.Cog.listener()
     async def on_member_join(self, member: discord.Member):
+        security = self.bot.get_cog("SecurityCog")
+        quarantined = False
+        if security:
+            quarantined = await security.handle_member_join(member)
+        if member.bot:
+            await self._sync_meowking(member.guild)
+            await self._log(member.guild, "Member joined", f"{member.mention} (\u0060{member.id}\u0060) joined the server.", member)
+            return
+
         role_id = self.bot.store.data.get("autoroles", {}).get(str(member.guild.id))
-        if role_id and member.guild.me and member.guild.me.guild_permissions.manage_roles:
+        if role_id and not quarantined and member.guild.me and member.guild.me.guild_permissions.manage_roles:
             role = member.guild.get_role(int(role_id))
             if role and role < member.guild.me.top_role:
                 try:
