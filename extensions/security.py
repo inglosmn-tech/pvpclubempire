@@ -772,7 +772,7 @@ class SecurityCog(commands.Cog):
                     attempts = int(row["attempts"]) + 1
                     status = "failed" if attempts >= VERIFY_ATTEMPTS else "pending"
                     await conn.execute(
-                        "UPDATE pvpclub_raid_verifications SET attempts=$3,status=$4 WHERE guild_id=$1 AND member_id=$2",
+                        "UPDATE pvpclub_raid_verifications SET attempts=$3,status=$4,expired_at=CASE WHEN $4='failed' THEN NOW() ELSE expired_at END WHERE guild_id=$1 AND member_id=$2",
                         guild.id, user.id, attempts, status,
                     )
                 else:
@@ -826,6 +826,30 @@ class SecurityCog(commands.Cog):
         except discord.HTTPException:
             log.info("Could not update verification panel for %s", member_id)
 
+    async def handle_member_leave(self, member: discord.Member):
+        """Restore saved member overwrites so a rejoin starts from a clean permission state."""
+        pool = self.pool()
+        if pool is None:
+            return
+        for scope in ("bot", "raid"):
+            try:
+                await self.restore_quarantine(member.guild, member, scope)
+            except Exception:
+                log.exception("Could not restore quarantine overwrites for departing member %s", member.id)
+        try:
+            await pool.execute(
+                """UPDATE pvpclub_bot_approvals SET status='left'
+                   WHERE guild_id=$1 AND bot_id=$2 AND status='pending'""",
+                member.guild.id, member.id,
+            )
+            await pool.execute(
+                """UPDATE pvpclub_raid_verifications SET status='left'
+                   WHERE guild_id=$1 AND member_id=$2 AND status IN ('pending','expired')""",
+                member.guild.id, member.id,
+            )
+        except Exception:
+            log.exception("Could not persist departure state for security records of member %s", member.id)
+
     @commands.Cog.listener()
     async def on_guild_channel_create(self, channel):
         await self.on_new_channel(channel)
@@ -857,7 +881,7 @@ class SecurityCog(commands.Cog):
                 await self.modlog(guild, "Raid protection ended", "Protection window", guild.id, "PVPClub Empire", None, "Configured protection window elapsed. Unverified members remain quarantined.", color=0x57D69A)
         rows = await self.pool().fetch(
             """SELECT guild_id,member_id,status,expires_at,expired_at FROM pvpclub_raid_verifications
-               WHERE status IN ('pending','expired') ORDER BY expires_at LIMIT 100"""
+               WHERE status IN ('pending','expired','failed') ORDER BY expires_at LIMIT 100"""
         )
         for row in rows:
             guild = self.bot.get_guild(int(row["guild_id"]))
@@ -883,7 +907,7 @@ class SecurityCog(commands.Cog):
                         member = await guild.fetch_member(member_id)
                     except discord.NotFound:
                         await self.pool().execute(
-                            "UPDATE pvpclub_raid_verifications SET status='left' WHERE guild_id=$1 AND member_id=$2 AND status IN ('pending','expired')",
+                            "UPDATE pvpclub_raid_verifications SET status='left' WHERE guild_id=$1 AND member_id=$2 AND status IN ('pending','expired','failed')",
                             guild.id, member_id,
                         )
                         await self.pool().execute(
@@ -900,7 +924,7 @@ class SecurityCog(commands.Cog):
                 try:
                     await member.kick(reason="PVPClub Empire raid verification expired")
                     await self.pool().execute(
-                        "UPDATE pvpclub_raid_verifications SET status='kicked' WHERE guild_id=$1 AND member_id=$2",
+                        "UPDATE pvpclub_raid_verifications SET status='kicked' WHERE guild_id=$1 AND member_id=$2 AND status IN ('pending','expired','failed')",
                         guild.id, member_id,
                     )
                     await self.pool().execute(
@@ -1034,6 +1058,10 @@ class SecurityCog(commands.Cog):
         now = discord.utils.utcnow()
         async with pool.acquire() as conn:
             async with conn.transaction():
+                lock_key = int(hashlib.sha256(
+                    f"{interaction.guild_id}:{member.id}:{role.id}".encode("ascii")
+                ).hexdigest()[:15], 16)
+                await conn.execute("SELECT pg_advisory_xact_lock($1)", lock_key)
                 existing = await conn.fetchrow(
                     """SELECT id,expires_at FROM pvpclub_temporary_roles
                        WHERE guild_id=$1 AND member_id=$2 AND role_id=$3
