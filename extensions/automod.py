@@ -15,7 +15,7 @@ import unicodedata
 import ipaddress
 from collections import defaultdict, deque
 from statistics import median, pstdev
-from datetime import timedelta
+from datetime import timedelta, timezone
 from urllib.parse import urlsplit
 
 import discord
