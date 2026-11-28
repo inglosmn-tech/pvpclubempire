@@ -4008,6 +4008,7 @@ class PvPClubTiersCog(commands.Cog):
 
         # Reconcile the shared best-tier role after the atomic database transfer.
         role_sync_ok = True
+        config = {}
         try:
             config = await self.setting(ctx.guild.id)
             old_profile = {
@@ -4028,7 +4029,7 @@ class PvPClubTiersCog(commands.Cog):
                 new_member.id,
             )
 
-        if config.get("leaderboard_channel_id") if "config" in locals() else False:
+        if config.get("leaderboard_channel_id"):
             asyncio.create_task(self.refresh_leaderboard_safely(ctx.guild))
 
         transferred_lines = [
