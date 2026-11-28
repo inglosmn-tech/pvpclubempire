@@ -2,6 +2,12 @@
 from __future__ import annotations
 
 import re
+import sys
+from pathlib import Path
+
+# Running a script by path puts scripts/ rather than the repository root on
+# sys.path. Add the root so the extensions package imports consistently in CI.
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 import discord
 
