@@ -3803,6 +3803,258 @@ class PvPClubTiersCog(commands.Cog):
             asyncio.create_task(self.refresh_leaderboard_safely(guild))
         return old_tier, best, best_mode
 
+    @commands.command(name="transfer-tiers")
+    @commands.guild_only()
+    async def transfer_tiers(
+        self,
+        ctx: commands.Context,
+        old_member: discord.Member,
+        new_member: discord.Member,
+    ):
+        """Move a tiered player's PvPClubTiers profile to their replacement Discord account."""
+        if ctx.guild is None or ctx.author.id != ctx.guild.owner_id:
+            await ctx.reply("Only the Discord server owner can transfer tier profiles.", mention_author=False)
+            return
+        if self.db is None or self.mongo_client is None:
+            await ctx.reply("PvPClubTiers database is not connected. No data was changed.", mention_author=False)
+            return
+        if old_member.id == new_member.id:
+            await ctx.reply("Choose two different Discord accounts. No data was changed.", mention_author=False)
+            return
+        if old_member.bot or new_member.bot:
+            await ctx.reply("Tier profiles can only be transferred between human Discord accounts.", mention_author=False)
+            return
+
+        status_message = await ctx.reply(
+            f"Checking the tier profile for {old_member.mention} before transferring it to {new_member.mention}…",
+            mention_author=False,
+        )
+        now = datetime.now(timezone.utc)
+
+        def transfer_transaction():
+            outcome = {}
+
+            with self.mongo_client.start_session() as session:
+                def transaction_body(transaction_session):
+                    outcome.clear()
+                    old_query = {
+                        "guild_id": ctx.guild.id,
+                        "$or": [
+                            {"discord_id": old_member.id},
+                            {"discordId": old_member.id},
+                        ],
+                    }
+                    new_query = {
+                        "guild_id": ctx.guild.id,
+                        "$or": [
+                            {"discord_id": new_member.id},
+                            {"discordId": new_member.id},
+                        ],
+                    }
+                    source = self.players.find_one(old_query, session=transaction_session)
+                    if source is None:
+                        raise ValueError(
+                            f"{old_member.display_name} does not have a saved PvPClubTiers profile."
+                        )
+
+                    source_tiers = {
+                        mode: tier
+                        for mode, tier in (source.get("tiers") or {}).items()
+                        if mode in GAMEMODES and tier in TIERS
+                    }
+                    if not source_tiers:
+                        raise ValueError(
+                            f"{old_member.display_name} has no ranked gamemode tiers to transfer."
+                        )
+
+                    destination = self.players.find_one(new_query, session=transaction_session)
+                    destination_tiers = (destination or {}).get("tiers") or {}
+                    if destination_tiers:
+                        ranked = [
+                            f"{mode}: {tier}"
+                            for mode, tier in destination_tiers.items()
+                            if mode in GAMEMODES and tier in TIERS
+                        ]
+                        detail = ", ".join(ranked[:4]) if ranked else "an existing tier profile"
+                        raise ValueError(
+                            f"{new_member.display_name} already has {detail}. "
+                            "I won't overwrite another tier profile. No data was changed."
+                        )
+
+                    minecraft_ign = str(source.get("username") or old_member.display_name).strip()
+                    if not minecraft_ign:
+                        raise ValueError("The old profile has no Minecraft username. No data was changed.")
+
+                    destination_fields = {
+                        "guild_id": ctx.guild.id,
+                        "discord_id": new_member.id,
+                        "discordId": new_member.id,
+                        "username": minecraft_ign,
+                        "username_lc": minecraft_ign.casefold(),
+                        "tiers": source_tiers,
+                        "total_points": total_tier_points(source_tiers),
+                        "updated_at": now,
+                        "tiers_transferred_from": old_member.id,
+                        "tiers_transferred_at": now,
+                    }
+
+                    if destination is None:
+                        self.players.insert_one(
+                            {
+                                **destination_fields,
+                                "elo": 1000,
+                                "wins": 0,
+                                "losses": 0,
+                                "duels_played": 0,
+                                "duel_loss_streaks": {},
+                                "cooldowns": {},
+                                "created_at": now,
+                            },
+                            session=transaction_session,
+                        )
+                    else:
+                        self.players.update_one(
+                            {"_id": destination["_id"]},
+                            {"$set": destination_fields},
+                            session=transaction_session,
+                        )
+
+                    # Keep the old Discord profile for audit purposes, but remove
+                    # every active tier and its points from that account.
+                    old_display_name = old_member.display_name
+                    self.players.update_one(
+                        {"_id": source["_id"]},
+                        {"$set": {
+                            "discord_id": old_member.id,
+                            "discordId": old_member.id,
+                            "username": old_display_name,
+                            "username_lc": old_display_name.casefold(),
+                            "tiers": {},
+                            "total_points": 0,
+                            "updated_at": now,
+                            "tiers_transferred_to": new_member.id,
+                            "tiers_transferred_at": now,
+                        }},
+                        session=transaction_session,
+                    )
+
+                    # Move prior tier history and tier-change activity so the
+                    # replacement account retains its record of past testing.
+                    history_result = self.history.update_many(
+                        {"guild_id": ctx.guild.id, "discord_id": old_member.id},
+                        {"$set": {
+                            "discord_id": new_member.id,
+                            "transferred_from_discord_id": old_member.id,
+                        }},
+                        session=transaction_session,
+                    )
+                    activity_result = self.activity.update_many(
+                        {
+                            "guild_id": ctx.guild.id,
+                            "kind": "tier_change",
+                            "discord_id": old_member.id,
+                        },
+                        {"$set": {
+                            "discord_id": new_member.id,
+                            "transferred_from_discord_id": old_member.id,
+                        }},
+                        session=transaction_session,
+                    )
+                    self.activity.insert_one(
+                        {
+                            "guild_id": ctx.guild.id,
+                            "kind": "tier_profile_transfer",
+                            "from_discord_id": old_member.id,
+                            "to_discord_id": new_member.id,
+                            "from_name": old_member.display_name,
+                            "to_name": new_member.display_name,
+                            "username": minecraft_ign,
+                            "tiers": source_tiers,
+                            "transferred_by": ctx.author.id,
+                            "created_at": now,
+                        },
+                        session=transaction_session,
+                    )
+                    outcome.update({
+                        "username": minecraft_ign,
+                        "tiers": source_tiers,
+                        "history_count": history_result.modified_count,
+                        "activity_count": activity_result.modified_count,
+                    })
+
+                session.with_transaction(transaction_body)
+
+            return outcome
+
+        try:
+            result = await self.db_call(transfer_transaction)
+        except ValueError as exc:
+            await status_message.edit(content=f"❌ {exc}")
+            return
+        except Exception:
+            log.exception(
+                "Tier profile transfer failed from %s to %s in guild %s",
+                old_member.id,
+                new_member.id,
+                ctx.guild.id,
+            )
+            await status_message.edit(
+                content=(
+                    "❌ The transfer could not be completed. The database transaction was not confirmed, "
+                    "so please don't retry repeatedly. Check the Render logs first."
+                )
+            )
+            return
+
+        # Reconcile the shared best-tier role after the atomic database transfer.
+        role_sync_ok = True
+        try:
+            config = await self.setting(ctx.guild.id)
+            old_profile = {
+                "tiers": {},
+                "total_points": 0,
+            }
+            new_profile = {
+                "tiers": result["tiers"],
+                "total_points": total_tier_points(result["tiers"]),
+            }
+            await self.sync_best_role(old_member, old_profile, config=config)
+            await self.sync_best_role(new_member, new_profile, config=config)
+        except Exception:
+            role_sync_ok = False
+            log.exception(
+                "Tier profile transferred, but tier-role sync failed for %s -> %s",
+                old_member.id,
+                new_member.id,
+            )
+
+        if config.get("leaderboard_channel_id") if "config" in locals() else False:
+            asyncio.create_task(self.refresh_leaderboard_safely(ctx.guild))
+
+        transferred_lines = [
+            f"**{mode}:** {tier}"
+            for mode, tier in result["tiers"].items()
+        ]
+        response = (
+            "✅ **Tier profile transferred successfully!**\n"
+            f"**Minecraft IGN:** {result['username']}\n"
+            f"**Old account:** {old_member.mention} — all active tiers cleared\n"
+            f"**New account:** {new_member.mention} — received {len(result['tiers'])} gamemode tier(s)\n"
+            + "\n".join(transferred_lines)
+            + f"\n**Tier history moved:** {result['history_count']} record(s)"
+        )
+        if not role_sync_ok:
+            response += (
+                "\n⚠️ The database transfer succeeded, but tier roles could not be synchronized. "
+                "Check the bot's Manage Roles permission and role hierarchy."
+            )
+        response += (
+            "\n\nELO, wins/losses, duel records, tester stats and active queue entries were not transferred."
+        )
+        await status_message.edit(content=response)
+        if role_sync_ok and ctx.guild:
+            asyncio.create_task(self.refresh_leaderboard_safely(ctx.guild))
+
     @commands.command(name="settier")
     @commands.guild_only()
     async def settier(self, ctx: commands.Context, *, target: str = ""):
