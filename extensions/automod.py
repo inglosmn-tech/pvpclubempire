@@ -1042,10 +1042,11 @@ async def automod_nsfw_on(interaction: discord.Interaction):
     if not isinstance(log_channel, discord.TextChannel):
         await interaction.response.send_message("Run /automod nsfw setup first so moderation actions have a log channel.", ephemeral=True)
         return
+    await interaction.response.defer(ephemeral=True, thinking=True)
     config["nsfw_enabled"] = True
     _bot.store.data.setdefault("automod_settings", {})[str(interaction.guild_id)] = True
     await _bot.store.save()
-    await interaction.response.send_message("✅ NSFW text and image filtering is enabled. The main AutoMod switch is also on.", ephemeral=True)
+    await interaction.followup.send("✅ NSFW text and image filtering is enabled. The main AutoMod switch is also on.", ephemeral=True)
 
 
 @nsfw_group.command(name="off", description="Disable explicit text and image filtering.")
@@ -1053,10 +1054,11 @@ async def automod_nsfw_off(interaction: discord.Interaction):
     if not _actual_owner(interaction):
         await interaction.response.send_message("Only the actual server owner can configure NSFW filtering.", ephemeral=True)
         return
+    await interaction.response.defer(ephemeral=True, thinking=True)
     config = _bot.store.data.setdefault("automod_config", {}).setdefault(str(interaction.guild_id), {})
     config["nsfw_enabled"] = False
     await _bot.store.save()
-    await interaction.response.send_message("NSFW text and image filtering is disabled. Other AutoMod modules remain active.", ephemeral=True)
+    await interaction.followup.send("NSFW text and image filtering is disabled. Other AutoMod modules remain active.", ephemeral=True)
 
 
 @nsfw_group.command(name="status", description="Inspect explicit-content filtering configuration.")
@@ -1097,6 +1099,7 @@ async def automod_nsfw_setup(
     if not __import__("os").getenv("OPENAI_API_KEY"):
         await interaction.response.send_message("Set OPENAI_API_KEY in Render first. I have not enabled NSFW filtering.", ephemeral=True)
         return
+    await interaction.response.defer(ephemeral=True, thinking=True)
     config = _bot.store.data.setdefault("automod_config", {}).setdefault(str(interaction.guild_id), {})
     config["nsfw_enabled"] = True
     _bot.store.data.setdefault("automod_settings", {})[str(interaction.guild_id)] = True
@@ -1104,7 +1107,7 @@ async def automod_nsfw_setup(
     config["nsfw_minor_threshold"] = float(minors_threshold)
     _bot.store.data.setdefault("modlog_channels", {})[str(interaction.guild_id)] = str(log_channel.id)
     await _bot.store.save()
-    await interaction.response.send_message(
+    await interaction.followup.send(
         f"✅ NSFW filtering is enabled. Logs: {log_channel.mention}; explicit threshold: {sexual_threshold:.2f}; minors-text threshold: {minors_threshold:.2f}.",
         ephemeral=True,
     )
