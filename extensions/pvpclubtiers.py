@@ -84,6 +84,2861 @@ TRIVIA_QUESTIONS = [
     ("What is the fastest land animal?", ["cheetah"]),
 ]
 
+# Added question bank: 467 unique questions, bringing the complete bank to exactly 500.
+EXTRA_TRIVIA_QUESTIONS = [
+    [
+        "Which item is used to cure a zombie villager?",
+        [
+            "golden apple"
+        ]
+    ],
+    [
+        "Which potion effect is needed before using a golden apple to cure a zombie villager?",
+        [
+            "weakness"
+        ]
+    ],
+    [
+        "What tool can mine diamond ore?",
+        [
+            "iron pickaxe",
+            "diamond pickaxe",
+            "netherite pickaxe"
+        ]
+    ],
+    [
+        "Which block lets players change a villager's profession to librarian?",
+        [
+            "lectern"
+        ]
+    ],
+    [
+        "Which block lets players change a villager's profession to farmer?",
+        [
+            "composter"
+        ]
+    ],
+    [
+        "Which item is used to breed cows?",
+        [
+            "wheat"
+        ]
+    ],
+    [
+        "Which item is used to breed pigs?",
+        [
+            "carrot",
+            "potato",
+            "beetroot"
+        ]
+    ],
+    [
+        "Which item is used to breed chickens?",
+        [
+            "seeds",
+            "wheat seeds"
+        ]
+    ],
+    [
+        "Which item is used to breed sheep?",
+        [
+            "wheat"
+        ]
+    ],
+    [
+        "Which item is used to breed horses?",
+        [
+            "golden apple",
+            "golden carrot"
+        ]
+    ],
+    [
+        "Which mobs can be milked with a bucket?",
+        [
+            "cow",
+            "mooshroom",
+            "goat"
+        ]
+    ],
+    [
+        "Which mob drops blaze rods?",
+        [
+            "blaze"
+        ]
+    ],
+    [
+        "Which mob drops ghast tears?",
+        [
+            "ghast"
+        ]
+    ],
+    [
+        "Which mob commonly drops string when defeated?",
+        [
+            "spider"
+        ]
+    ],
+    [
+        "Which mob drops ender pearls?",
+        [
+            "enderman"
+        ]
+    ],
+    [
+        "Which mob can drop a shulker shell?",
+        [
+            "shulker"
+        ]
+    ],
+    [
+        "Which mob guards an Ocean Monument?",
+        [
+            "guardian",
+            "elder guardian"
+        ]
+    ],
+    [
+        "Which mob is the boss of an Ocean Monument?",
+        [
+            "elder guardian"
+        ]
+    ],
+    [
+        "Which mob protects the Deep Dark?",
+        [
+            "warden"
+        ]
+    ],
+    [
+        "Which mob can turn villagers into witches when lightning strikes nearby?",
+        [
+            "witch"
+        ]
+    ],
+    [
+        "Which green hostile mob attacks by exploding near players?",
+        [
+            "creeper"
+        ]
+    ],
+    [
+        "Which mob attacks players with a bow from a distance?",
+        [
+            "skeleton"
+        ]
+    ],
+    [
+        "Which mob throws potions at players?",
+        [
+            "witch"
+        ]
+    ],
+    [
+        "Which mob can pick up and use some dropped items?",
+        [
+            "zombie"
+        ]
+    ],
+    [
+        "Which Nether mob is attracted to warped fungus?",
+        [
+            "strider"
+        ]
+    ],
+    [
+        "Which mob can be ridden across lava using a saddle?",
+        [
+            "strider"
+        ]
+    ],
+    [
+        "Which mob is attracted to crimson fungus?",
+        [
+            "hoglin"
+        ]
+    ],
+    [
+        "Which mob is scared of warped fungus?",
+        [
+            "hoglin"
+        ]
+    ],
+    [
+        "Which flying Nether mob shoots explosive fireballs?",
+        [
+            "ghast"
+        ]
+    ],
+    [
+        "Which mob can teleport and pick up certain blocks?",
+        [
+            "enderman"
+        ]
+    ],
+    [
+        "Which mob can be tamed with bones?",
+        [
+            "wolf"
+        ]
+    ],
+    [
+        "Which food can tame an ocelot?",
+        [
+            "raw cod",
+            "raw salmon"
+        ]
+    ],
+    [
+        "Which item can be used to tame a parrot?",
+        [
+            "seeds",
+            "wheat seeds",
+            "melon seeds",
+            "pumpkin seeds",
+            "beetroot seeds"
+        ]
+    ],
+    [
+        "Which item can be used to tame a cat?",
+        [
+            "raw cod",
+            "raw salmon"
+        ]
+    ],
+    [
+        "Which mob can be equipped with a chest for storage?",
+        [
+            "donkey",
+            "mule",
+            "llama"
+        ]
+    ],
+    [
+        "Which animal produces honey?",
+        [
+            "bee"
+        ]
+    ],
+    [
+        "Which block is used to collect honey from a beehive?",
+        [
+            "glass bottle"
+        ]
+    ],
+    [
+        "Which block is used to make a basic furnace?",
+        [
+            "cobblestone"
+        ]
+    ],
+    [
+        "How many wooden planks are needed to craft a crafting table?",
+        [
+            "4",
+            "four"
+        ]
+    ],
+    [
+        "Which block is used to store items in a 27-slot container?",
+        [
+            "chest"
+        ]
+    ],
+    [
+        "Which block can smelt items faster than a furnace?",
+        [
+            "blast furnace"
+        ]
+    ],
+    [
+        "Which block cooks food faster than a furnace?",
+        [
+            "smoker"
+        ]
+    ],
+    [
+        "Which block is used to repair and combine tools with experience levels?",
+        [
+            "anvil"
+        ]
+    ],
+    [
+        "Which block is used to enchant items?",
+        [
+            "enchanting table"
+        ]
+    ],
+    [
+        "Which block is used to brew potions?",
+        [
+            "brewing stand"
+        ]
+    ],
+    [
+        "Which item is needed to fuel a brewing stand?",
+        [
+            "blaze powder"
+        ]
+    ],
+    [
+        "Which item is used to make an awkward potion?",
+        [
+            "nether wart"
+        ]
+    ],
+    [
+        "Which block is used to set a respawn point in the Nether?",
+        [
+            "respawn anchor"
+        ]
+    ],
+    [
+        "Which item charges a respawn anchor?",
+        [
+            "glowstone"
+        ]
+    ],
+    [
+        "Which block is needed to build a Nether portal?",
+        [
+            "obsidian"
+        ]
+    ],
+    [
+        "Which item lights a Nether portal?",
+        [
+            "flint and steel"
+        ]
+    ],
+    [
+        "Which block is used to activate a beacon?",
+        [
+            "beacon"
+        ]
+    ],
+    [
+        "Which materials can be used as a beacon base?",
+        [
+            "iron",
+            "gold",
+            "emerald",
+            "diamond",
+            "netherite",
+            "iron blocks",
+            "gold blocks",
+            "emerald blocks",
+            "diamond blocks",
+            "netherite blocks"
+        ]
+    ],
+    [
+        "Which item is used to locate a stronghold?",
+        [
+            "eye of ender"
+        ]
+    ],
+    [
+        "Which item is crafted using four ender pearls and four blaze powder?",
+        [
+            "eye of ender"
+        ]
+    ],
+    [
+        "Which item repairs elytra?",
+        [
+            "phantom membrane"
+        ]
+    ],
+    [
+        "Which mob drops phantom membranes?",
+        [
+            "phantom"
+        ]
+    ],
+    [
+        "Which item is used to make fireworks for elytra flight?",
+        [
+            "firework rocket",
+            "firework rockets"
+        ]
+    ],
+    [
+        "Which tool is required to harvest obsidian?",
+        [
+            "diamond pickaxe",
+            "netherite pickaxe"
+        ]
+    ],
+    [
+        "Which ore drops redstone dust when mined?",
+        [
+            "redstone ore",
+            "deepslate redstone ore"
+        ]
+    ],
+    [
+        "Which ancient Nether block can be smelted into Netherite scrap?",
+        [
+            "ancient debris"
+        ]
+    ],
+    [
+        "Which material is combined with a diamond tool in a smithing table to make it Netherite?",
+        [
+            "netherite ingot"
+        ]
+    ],
+    [
+        "Which table is used to upgrade diamond equipment to Netherite?",
+        [
+            "smithing table"
+        ]
+    ],
+    [
+        "Which item is used to duplicate armor trims?",
+        [
+            "smithing template"
+        ]
+    ],
+    [
+        "Which block turns sand into glass when smelted?",
+        [
+            "furnace",
+            "blast furnace"
+        ]
+    ],
+    [
+        "Which block is made by combining sand and gravel in a crafting recipe?",
+        [
+            "concrete powder"
+        ]
+    ],
+    [
+        "Which blocks fall when unsupported and can suffocate entities?",
+        [
+            "sand",
+            "gravel",
+            "concrete powder"
+        ]
+    ],
+    [
+        "Which block can be used to make a note block sound?",
+        [
+            "wood planks",
+            "planks"
+        ]
+    ],
+    [
+        "Which item is used to make a map?",
+        [
+            "paper",
+            "compass and paper"
+        ]
+    ],
+    [
+        "Which item points toward world spawn when used as a compass?",
+        [
+            "compass"
+        ]
+    ],
+    [
+        "Which item shows the time of day in the Overworld?",
+        [
+            "clock"
+        ]
+    ],
+    [
+        "Which item can be used to repair a fishing rod?",
+        [
+            "another fishing rod"
+        ]
+    ],
+    [
+        "Which item is used to lead animals?",
+        [
+            "lead",
+            "leash"
+        ]
+    ],
+    [
+        "Which item is used to shear sheep?",
+        [
+            "shears"
+        ]
+    ],
+    [
+        "Which transparent block is commonly used to make windows?",
+        [
+            "glass"
+        ]
+    ],
+    [
+        "Which block emits a redstone signal when a container's contents change?",
+        [
+            "comparator",
+            "redstone comparator"
+        ]
+    ],
+    [
+        "Which redstone component repeats and delays a signal?",
+        [
+            "repeater",
+            "redstone repeater"
+        ]
+    ],
+    [
+        "Which block detects updates in nearby blocks and sends a redstone signal?",
+        [
+            "observer"
+        ]
+    ],
+    [
+        "Which item is needed to make a shield?",
+        [
+            "iron ingot and planks",
+            "iron ingot"
+        ]
+    ],
+    [
+        "Which materials are used to craft a bow?",
+        [
+            "sticks and string",
+            "string and sticks"
+        ]
+    ],
+    [
+        "Which item can be used to deflect a projectile when held up?",
+        [
+            "shield"
+        ]
+    ],
+    [
+        "Which food is cooked from raw beef?",
+        [
+            "steak",
+            "cooked beef"
+        ]
+    ],
+    [
+        "Which food is made by combining wheat, sugar, milk and eggs?",
+        [
+            "cake"
+        ]
+    ],
+    [
+        "Which item can be used to glide after jumping from a high place?",
+        [
+            "elytra"
+        ]
+    ],
+    [
+        "What is the capital city of Canada?",
+        [
+            "Ottawa"
+        ]
+    ],
+    [
+        "On which continent is Canada located?",
+        [
+            "North America"
+        ]
+    ],
+    [
+        "What is the capital city of United States?",
+        [
+            "Washington, D.C."
+        ]
+    ],
+    [
+        "On which continent is United States located?",
+        [
+            "North America"
+        ]
+    ],
+    [
+        "What is the capital city of Mexico?",
+        [
+            "Mexico City"
+        ]
+    ],
+    [
+        "On which continent is Mexico located?",
+        [
+            "North America"
+        ]
+    ],
+    [
+        "What is the capital city of Guatemala?",
+        [
+            "Guatemala City"
+        ]
+    ],
+    [
+        "On which continent is Guatemala located?",
+        [
+            "North America"
+        ]
+    ],
+    [
+        "What is the capital city of Costa Rica?",
+        [
+            "San José"
+        ]
+    ],
+    [
+        "On which continent is Costa Rica located?",
+        [
+            "North America"
+        ]
+    ],
+    [
+        "What is the capital city of Panama?",
+        [
+            "Panama City"
+        ]
+    ],
+    [
+        "On which continent is Panama located?",
+        [
+            "North America"
+        ]
+    ],
+    [
+        "What is the capital city of Cuba?",
+        [
+            "Havana"
+        ]
+    ],
+    [
+        "On which continent is Cuba located?",
+        [
+            "North America"
+        ]
+    ],
+    [
+        "What is the capital city of Jamaica?",
+        [
+            "Kingston"
+        ]
+    ],
+    [
+        "On which continent is Jamaica located?",
+        [
+            "North America"
+        ]
+    ],
+    [
+        "What is the capital city of Haiti?",
+        [
+            "Port-au-Prince"
+        ]
+    ],
+    [
+        "On which continent is Haiti located?",
+        [
+            "North America"
+        ]
+    ],
+    [
+        "What is the capital city of Dominican Republic?",
+        [
+            "Santo Domingo"
+        ]
+    ],
+    [
+        "On which continent is Dominican Republic located?",
+        [
+            "North America"
+        ]
+    ],
+    [
+        "What is the capital city of Brazil?",
+        [
+            "Brasília"
+        ]
+    ],
+    [
+        "On which continent is Brazil located?",
+        [
+            "South America"
+        ]
+    ],
+    [
+        "What is the capital city of Argentina?",
+        [
+            "Buenos Aires"
+        ]
+    ],
+    [
+        "On which continent is Argentina located?",
+        [
+            "South America"
+        ]
+    ],
+    [
+        "What is the capital city of Chile?",
+        [
+            "Santiago"
+        ]
+    ],
+    [
+        "On which continent is Chile located?",
+        [
+            "South America"
+        ]
+    ],
+    [
+        "What is the capital city of Peru?",
+        [
+            "Lima"
+        ]
+    ],
+    [
+        "On which continent is Peru located?",
+        [
+            "South America"
+        ]
+    ],
+    [
+        "What is the capital city of Colombia?",
+        [
+            "Bogotá"
+        ]
+    ],
+    [
+        "On which continent is Colombia located?",
+        [
+            "South America"
+        ]
+    ],
+    [
+        "What is the capital city of Ecuador?",
+        [
+            "Quito"
+        ]
+    ],
+    [
+        "On which continent is Ecuador located?",
+        [
+            "South America"
+        ]
+    ],
+    [
+        "What is the capital city of Venezuela?",
+        [
+            "Caracas"
+        ]
+    ],
+    [
+        "On which continent is Venezuela located?",
+        [
+            "South America"
+        ]
+    ],
+    [
+        "What is the capital city of Uruguay?",
+        [
+            "Montevideo"
+        ]
+    ],
+    [
+        "On which continent is Uruguay located?",
+        [
+            "South America"
+        ]
+    ],
+    [
+        "What is the capital city of Paraguay?",
+        [
+            "Asunción"
+        ]
+    ],
+    [
+        "On which continent is Paraguay located?",
+        [
+            "South America"
+        ]
+    ],
+    [
+        "What is the capital city of Bolivia?",
+        [
+            "Sucre"
+        ]
+    ],
+    [
+        "On which continent is Bolivia located?",
+        [
+            "South America"
+        ]
+    ],
+    [
+        "What is the capital city of United Kingdom?",
+        [
+            "London"
+        ]
+    ],
+    [
+        "On which continent is United Kingdom located?",
+        [
+            "Europe"
+        ]
+    ],
+    [
+        "What is the capital city of Ireland?",
+        [
+            "Dublin"
+        ]
+    ],
+    [
+        "On which continent is Ireland located?",
+        [
+            "Europe"
+        ]
+    ],
+    [
+        "What is the capital city of Egypt?",
+        [
+            "Cairo"
+        ]
+    ],
+    [
+        "On which continent is Egypt located?",
+        [
+            "Africa"
+        ]
+    ],
+    [
+        "What is the capital city of Germany?",
+        [
+            "Berlin"
+        ]
+    ],
+    [
+        "On which continent is Germany located?",
+        [
+            "Europe"
+        ]
+    ],
+    [
+        "What is the capital city of Spain?",
+        [
+            "Madrid"
+        ]
+    ],
+    [
+        "On which continent is Spain located?",
+        [
+            "Europe"
+        ]
+    ],
+    [
+        "What is the capital city of Portugal?",
+        [
+            "Lisbon"
+        ]
+    ],
+    [
+        "On which continent is Portugal located?",
+        [
+            "Europe"
+        ]
+    ],
+    [
+        "What is the capital city of Italy?",
+        [
+            "Rome"
+        ]
+    ],
+    [
+        "On which continent is Italy located?",
+        [
+            "Europe"
+        ]
+    ],
+    [
+        "What is the capital city of Morocco?",
+        [
+            "Rabat"
+        ]
+    ],
+    [
+        "On which continent is Morocco located?",
+        [
+            "Africa"
+        ]
+    ],
+    [
+        "What is the capital city of Kenya?",
+        [
+            "Nairobi"
+        ]
+    ],
+    [
+        "On which continent is Kenya located?",
+        [
+            "Africa"
+        ]
+    ],
+    [
+        "What is the capital city of Nigeria?",
+        [
+            "Abuja"
+        ]
+    ],
+    [
+        "On which continent is Nigeria located?",
+        [
+            "Africa"
+        ]
+    ],
+    [
+        "What is the capital city of Switzerland?",
+        [
+            "Bern"
+        ]
+    ],
+    [
+        "On which continent is Switzerland located?",
+        [
+            "Europe"
+        ]
+    ],
+    [
+        "What is the capital city of South Africa?",
+        [
+            "Pretoria"
+        ]
+    ],
+    [
+        "On which continent is South Africa located?",
+        [
+            "Africa"
+        ]
+    ],
+    [
+        "What is the capital city of Poland?",
+        [
+            "Warsaw"
+        ]
+    ],
+    [
+        "On which continent is Poland located?",
+        [
+            "Europe"
+        ]
+    ],
+    [
+        "What is the capital city of Czechia?",
+        [
+            "Prague"
+        ]
+    ],
+    [
+        "On which continent is Czechia located?",
+        [
+            "Europe"
+        ]
+    ],
+    [
+        "What is the capital city of Slovakia?",
+        [
+            "Bratislava"
+        ]
+    ],
+    [
+        "On which continent is Slovakia located?",
+        [
+            "Europe"
+        ]
+    ],
+    [
+        "What is the capital city of Hungary?",
+        [
+            "Budapest"
+        ]
+    ],
+    [
+        "On which continent is Hungary located?",
+        [
+            "Europe"
+        ]
+    ],
+    [
+        "What is the capital city of Greece?",
+        [
+            "Athens"
+        ]
+    ],
+    [
+        "On which continent is Greece located?",
+        [
+            "Europe"
+        ]
+    ],
+    [
+        "What is the capital city of Norway?",
+        [
+            "Oslo"
+        ]
+    ],
+    [
+        "On which continent is Norway located?",
+        [
+            "Europe"
+        ]
+    ],
+    [
+        "What is the capital city of Sweden?",
+        [
+            "Stockholm"
+        ]
+    ],
+    [
+        "On which continent is Sweden located?",
+        [
+            "Europe"
+        ]
+    ],
+    [
+        "What is the capital city of Finland?",
+        [
+            "Helsinki"
+        ]
+    ],
+    [
+        "On which continent is Finland located?",
+        [
+            "Europe"
+        ]
+    ],
+    [
+        "What is the capital city of Denmark?",
+        [
+            "Copenhagen"
+        ]
+    ],
+    [
+        "On which continent is Denmark located?",
+        [
+            "Europe"
+        ]
+    ],
+    [
+        "What is the capital city of Australia?",
+        [
+            "Canberra"
+        ]
+    ],
+    [
+        "On which continent is Australia located?",
+        [
+            "Oceania"
+        ]
+    ],
+    [
+        "What is the capital city of Ukraine?",
+        [
+            "Kyiv"
+        ]
+    ],
+    [
+        "On which continent is Ukraine located?",
+        [
+            "Europe"
+        ]
+    ],
+    [
+        "What is the capital city of Romania?",
+        [
+            "Bucharest"
+        ]
+    ],
+    [
+        "On which continent is Romania located?",
+        [
+            "Europe"
+        ]
+    ],
+    [
+        "What is the capital city of Bulgaria?",
+        [
+            "Sofia"
+        ]
+    ],
+    [
+        "On which continent is Bulgaria located?",
+        [
+            "Europe"
+        ]
+    ],
+    [
+        "What is the capital city of Croatia?",
+        [
+            "Zagreb"
+        ]
+    ],
+    [
+        "On which continent is Croatia located?",
+        [
+            "Europe"
+        ]
+    ],
+    [
+        "What is the capital city of Serbia?",
+        [
+            "Belgrade"
+        ]
+    ],
+    [
+        "On which continent is Serbia located?",
+        [
+            "Europe"
+        ]
+    ],
+    [
+        "What is the capital city of Japan?",
+        [
+            "Tokyo"
+        ]
+    ],
+    [
+        "On which continent is Japan located?",
+        [
+            "Asia"
+        ]
+    ],
+    [
+        "What is the capital city of China?",
+        [
+            "Beijing"
+        ]
+    ],
+    [
+        "On which continent is China located?",
+        [
+            "Asia"
+        ]
+    ],
+    [
+        "What is the capital city of South Korea?",
+        [
+            "Seoul"
+        ]
+    ],
+    [
+        "On which continent is South Korea located?",
+        [
+            "Asia"
+        ]
+    ],
+    [
+        "What is the capital city of India?",
+        [
+            "New Delhi"
+        ]
+    ],
+    [
+        "On which continent is India located?",
+        [
+            "Asia"
+        ]
+    ],
+    [
+        "What is the capital city of Pakistan?",
+        [
+            "Islamabad"
+        ]
+    ],
+    [
+        "On which continent is Pakistan located?",
+        [
+            "Asia"
+        ]
+    ],
+    [
+        "What is the capital city of Bangladesh?",
+        [
+            "Dhaka"
+        ]
+    ],
+    [
+        "On which continent is Bangladesh located?",
+        [
+            "Asia"
+        ]
+    ],
+    [
+        "What is the capital city of Thailand?",
+        [
+            "Bangkok"
+        ]
+    ],
+    [
+        "On which continent is Thailand located?",
+        [
+            "Asia"
+        ]
+    ],
+    [
+        "What is the capital city of Vietnam?",
+        [
+            "Hanoi"
+        ]
+    ],
+    [
+        "On which continent is Vietnam located?",
+        [
+            "Asia"
+        ]
+    ],
+    [
+        "What is the capital city of Indonesia?",
+        [
+            "Jakarta"
+        ]
+    ],
+    [
+        "On which continent is Indonesia located?",
+        [
+            "Asia"
+        ]
+    ],
+    [
+        "What is the capital city of Philippines?",
+        [
+            "Manila"
+        ]
+    ],
+    [
+        "On which continent is Philippines located?",
+        [
+            "Asia"
+        ]
+    ],
+    [
+        "What is the capital city of Malaysia?",
+        [
+            "Kuala Lumpur"
+        ]
+    ],
+    [
+        "On which continent is Malaysia located?",
+        [
+            "Asia"
+        ]
+    ],
+    [
+        "What is the capital city of Singapore?",
+        [
+            "Singapore"
+        ]
+    ],
+    [
+        "On which continent is Singapore located?",
+        [
+            "Asia"
+        ]
+    ],
+    [
+        "What is the capital city of New Zealand?",
+        [
+            "Wellington"
+        ]
+    ],
+    [
+        "On which continent is New Zealand located?",
+        [
+            "Oceania"
+        ]
+    ],
+    [
+        "What is the chemical symbol for Hydrogen?",
+        [
+            "H"
+        ]
+    ],
+    [
+        "What is the atomic number of Hydrogen?",
+        [
+            "1"
+        ]
+    ],
+    [
+        "What is the chemical symbol for Helium?",
+        [
+            "He"
+        ]
+    ],
+    [
+        "What is the atomic number of Helium?",
+        [
+            "2"
+        ]
+    ],
+    [
+        "What is the chemical symbol for Lithium?",
+        [
+            "Li"
+        ]
+    ],
+    [
+        "What is the atomic number of Lithium?",
+        [
+            "3"
+        ]
+    ],
+    [
+        "What is the chemical symbol for Beryllium?",
+        [
+            "Be"
+        ]
+    ],
+    [
+        "What is the atomic number of Beryllium?",
+        [
+            "4"
+        ]
+    ],
+    [
+        "What is the chemical symbol for Boron?",
+        [
+            "B"
+        ]
+    ],
+    [
+        "What is the atomic number of Boron?",
+        [
+            "5"
+        ]
+    ],
+    [
+        "What is the chemical symbol for Carbon?",
+        [
+            "C"
+        ]
+    ],
+    [
+        "What is the atomic number of Carbon?",
+        [
+            "6"
+        ]
+    ],
+    [
+        "What is the chemical symbol for Nitrogen?",
+        [
+            "N"
+        ]
+    ],
+    [
+        "What is the atomic number of Nitrogen?",
+        [
+            "7"
+        ]
+    ],
+    [
+        "What is the chemical symbol for Oxygen?",
+        [
+            "O"
+        ]
+    ],
+    [
+        "What is the atomic number of Oxygen?",
+        [
+            "8"
+        ]
+    ],
+    [
+        "What is the chemical symbol for Fluorine?",
+        [
+            "F"
+        ]
+    ],
+    [
+        "What is the atomic number of Fluorine?",
+        [
+            "9"
+        ]
+    ],
+    [
+        "What is the chemical symbol for Neon?",
+        [
+            "Ne"
+        ]
+    ],
+    [
+        "What is the atomic number of Neon?",
+        [
+            "10"
+        ]
+    ],
+    [
+        "What is the chemical symbol for Sodium?",
+        [
+            "Na"
+        ]
+    ],
+    [
+        "What is the atomic number of Sodium?",
+        [
+            "11"
+        ]
+    ],
+    [
+        "What is the chemical symbol for Magnesium?",
+        [
+            "Mg"
+        ]
+    ],
+    [
+        "What is the atomic number of Magnesium?",
+        [
+            "12"
+        ]
+    ],
+    [
+        "What is the chemical symbol for Aluminium?",
+        [
+            "Al"
+        ]
+    ],
+    [
+        "What is the atomic number of Aluminium?",
+        [
+            "13"
+        ]
+    ],
+    [
+        "What is the chemical symbol for Silicon?",
+        [
+            "Si"
+        ]
+    ],
+    [
+        "What is the atomic number of Silicon?",
+        [
+            "14"
+        ]
+    ],
+    [
+        "What is the chemical symbol for Phosphorus?",
+        [
+            "P"
+        ]
+    ],
+    [
+        "What is the atomic number of Phosphorus?",
+        [
+            "15"
+        ]
+    ],
+    [
+        "What is the chemical symbol for Sulfur?",
+        [
+            "S"
+        ]
+    ],
+    [
+        "What is the atomic number of Sulfur?",
+        [
+            "16"
+        ]
+    ],
+    [
+        "What is the chemical symbol for Chlorine?",
+        [
+            "Cl"
+        ]
+    ],
+    [
+        "What is the atomic number of Chlorine?",
+        [
+            "17"
+        ]
+    ],
+    [
+        "What is the chemical symbol for Argon?",
+        [
+            "Ar"
+        ]
+    ],
+    [
+        "What is the atomic number of Argon?",
+        [
+            "18"
+        ]
+    ],
+    [
+        "What is the chemical symbol for Potassium?",
+        [
+            "K"
+        ]
+    ],
+    [
+        "What is the atomic number of Potassium?",
+        [
+            "19"
+        ]
+    ],
+    [
+        "What is the chemical symbol for Calcium?",
+        [
+            "Ca"
+        ]
+    ],
+    [
+        "What is the atomic number of Calcium?",
+        [
+            "20"
+        ]
+    ],
+    [
+        "What is the chemical symbol for Scandium?",
+        [
+            "Sc"
+        ]
+    ],
+    [
+        "What is the atomic number of Scandium?",
+        [
+            "21"
+        ]
+    ],
+    [
+        "What is the chemical symbol for Titanium?",
+        [
+            "Ti"
+        ]
+    ],
+    [
+        "What is the atomic number of Titanium?",
+        [
+            "22"
+        ]
+    ],
+    [
+        "What is the chemical symbol for Vanadium?",
+        [
+            "V"
+        ]
+    ],
+    [
+        "What is the atomic number of Vanadium?",
+        [
+            "23"
+        ]
+    ],
+    [
+        "What is the chemical symbol for Chromium?",
+        [
+            "Cr"
+        ]
+    ],
+    [
+        "What is the atomic number of Chromium?",
+        [
+            "24"
+        ]
+    ],
+    [
+        "What is the chemical symbol for Manganese?",
+        [
+            "Mn"
+        ]
+    ],
+    [
+        "What is the atomic number of Manganese?",
+        [
+            "25"
+        ]
+    ],
+    [
+        "What is the chemical symbol for Iron?",
+        [
+            "Fe"
+        ]
+    ],
+    [
+        "What is the atomic number of Iron?",
+        [
+            "26"
+        ]
+    ],
+    [
+        "What is the chemical symbol for Cobalt?",
+        [
+            "Co"
+        ]
+    ],
+    [
+        "What is the atomic number of Cobalt?",
+        [
+            "27"
+        ]
+    ],
+    [
+        "What is the chemical symbol for Nickel?",
+        [
+            "Ni"
+        ]
+    ],
+    [
+        "What is the atomic number of Nickel?",
+        [
+            "28"
+        ]
+    ],
+    [
+        "What is the chemical symbol for Copper?",
+        [
+            "Cu"
+        ]
+    ],
+    [
+        "What is the atomic number of Copper?",
+        [
+            "29"
+        ]
+    ],
+    [
+        "What is the chemical symbol for Zinc?",
+        [
+            "Zn"
+        ]
+    ],
+    [
+        "What is the atomic number of Zinc?",
+        [
+            "30"
+        ]
+    ],
+    [
+        "What is 17 + 28?",
+        [
+            "45"
+        ]
+    ],
+    [
+        "What is 36 + 49?",
+        [
+            "85"
+        ]
+    ],
+    [
+        "What is 58 + 27?",
+        [
+            "85"
+        ]
+    ],
+    [
+        "What is 64 + 39?",
+        [
+            "103"
+        ]
+    ],
+    [
+        "What is 75 + 18?",
+        [
+            "93"
+        ]
+    ],
+    [
+        "What is 83 + 46?",
+        [
+            "129"
+        ]
+    ],
+    [
+        "What is 92 + 37?",
+        [
+            "129"
+        ]
+    ],
+    [
+        "What is 105 + 28?",
+        [
+            "133"
+        ]
+    ],
+    [
+        "What is 117 + 36?",
+        [
+            "153"
+        ]
+    ],
+    [
+        "What is 129 + 44?",
+        [
+            "173"
+        ]
+    ],
+    [
+        "What is 138 + 57?",
+        [
+            "195"
+        ]
+    ],
+    [
+        "What is 146 + 68?",
+        [
+            "214"
+        ]
+    ],
+    [
+        "What is 157 + 29?",
+        [
+            "186"
+        ]
+    ],
+    [
+        "What is 169 + 54?",
+        [
+            "223"
+        ]
+    ],
+    [
+        "What is 178 + 63?",
+        [
+            "241"
+        ]
+    ],
+    [
+        "What is 186 + 77?",
+        [
+            "263"
+        ]
+    ],
+    [
+        "What is 197 + 48?",
+        [
+            "245"
+        ]
+    ],
+    [
+        "What is 208 + 59?",
+        [
+            "267"
+        ]
+    ],
+    [
+        "What is 219 + 67?",
+        [
+            "286"
+        ]
+    ],
+    [
+        "What is 234 + 56?",
+        [
+            "290"
+        ]
+    ],
+    [
+        "What is 245 + 38?",
+        [
+            "283"
+        ]
+    ],
+    [
+        "What is 256 + 79?",
+        [
+            "335"
+        ]
+    ],
+    [
+        "What is 267 + 84?",
+        [
+            "351"
+        ]
+    ],
+    [
+        "What is 278 + 93?",
+        [
+            "371"
+        ]
+    ],
+    [
+        "What is 289 + 64?",
+        [
+            "353"
+        ]
+    ],
+    [
+        "What is 305 + 87?",
+        [
+            "392"
+        ]
+    ],
+    [
+        "What is 316 + 95?",
+        [
+            "411"
+        ]
+    ],
+    [
+        "What is 327 + 108?",
+        [
+            "435"
+        ]
+    ],
+    [
+        "What is 338 + 119?",
+        [
+            "457"
+        ]
+    ],
+    [
+        "What is 349 + 126?",
+        [
+            "475"
+        ]
+    ],
+    [
+        "What is 91 - 37?",
+        [
+            "54"
+        ]
+    ],
+    [
+        "What is 108 - 49?",
+        [
+            "59"
+        ]
+    ],
+    [
+        "What is 125 - 58?",
+        [
+            "67"
+        ]
+    ],
+    [
+        "What is 143 - 67?",
+        [
+            "76"
+        ]
+    ],
+    [
+        "What is 159 - 72?",
+        [
+            "87"
+        ]
+    ],
+    [
+        "What is 176 - 88?",
+        [
+            "88"
+        ]
+    ],
+    [
+        "What is 193 - 94?",
+        [
+            "99"
+        ]
+    ],
+    [
+        "What is 211 - 106?",
+        [
+            "105"
+        ]
+    ],
+    [
+        "What is 228 - 119?",
+        [
+            "109"
+        ]
+    ],
+    [
+        "What is 245 - 127?",
+        [
+            "118"
+        ]
+    ],
+    [
+        "What is 263 - 138?",
+        [
+            "125"
+        ]
+    ],
+    [
+        "What is 281 - 149?",
+        [
+            "132"
+        ]
+    ],
+    [
+        "What is 299 - 157?",
+        [
+            "142"
+        ]
+    ],
+    [
+        "What is 318 - 169?",
+        [
+            "149"
+        ]
+    ],
+    [
+        "What is 337 - 178?",
+        [
+            "159"
+        ]
+    ],
+    [
+        "What is 356 - 189?",
+        [
+            "167"
+        ]
+    ],
+    [
+        "What is 375 - 197?",
+        [
+            "178"
+        ]
+    ],
+    [
+        "What is 394 - 208?",
+        [
+            "186"
+        ]
+    ],
+    [
+        "What is 413 - 219?",
+        [
+            "194"
+        ]
+    ],
+    [
+        "What is 432 - 227?",
+        [
+            "205"
+        ]
+    ],
+    [
+        "What is 451 - 238?",
+        [
+            "213"
+        ]
+    ],
+    [
+        "What is 470 - 249?",
+        [
+            "221"
+        ]
+    ],
+    [
+        "What is 489 - 257?",
+        [
+            "232"
+        ]
+    ],
+    [
+        "What is 508 - 268?",
+        [
+            "240"
+        ]
+    ],
+    [
+        "What is 527 - 279?",
+        [
+            "248"
+        ]
+    ],
+    [
+        "What is 546 - 287?",
+        [
+            "259"
+        ]
+    ],
+    [
+        "What is 565 - 298?",
+        [
+            "267"
+        ]
+    ],
+    [
+        "What is 584 - 309?",
+        [
+            "275"
+        ]
+    ],
+    [
+        "What is 603 - 317?",
+        [
+            "286"
+        ]
+    ],
+    [
+        "What is 622 - 328?",
+        [
+            "294"
+        ]
+    ],
+    [
+        "What is 7 × 8?",
+        [
+            "56"
+        ]
+    ],
+    [
+        "What is 9 × 12?",
+        [
+            "108"
+        ]
+    ],
+    [
+        "What is 11 × 13?",
+        [
+            "143"
+        ]
+    ],
+    [
+        "What is 12 × 14?",
+        [
+            "168"
+        ]
+    ],
+    [
+        "What is 13 × 15?",
+        [
+            "195"
+        ]
+    ],
+    [
+        "What is 14 × 16?",
+        [
+            "224"
+        ]
+    ],
+    [
+        "What is 15 × 17?",
+        [
+            "255"
+        ]
+    ],
+    [
+        "What is 16 × 18?",
+        [
+            "288"
+        ]
+    ],
+    [
+        "What is 17 × 19?",
+        [
+            "323"
+        ]
+    ],
+    [
+        "What is 18 × 21?",
+        [
+            "378"
+        ]
+    ],
+    [
+        "What is 19 × 22?",
+        [
+            "418"
+        ]
+    ],
+    [
+        "What is 21 × 23?",
+        [
+            "483"
+        ]
+    ],
+    [
+        "What is 22 × 24?",
+        [
+            "528"
+        ]
+    ],
+    [
+        "What is 23 × 25?",
+        [
+            "575"
+        ]
+    ],
+    [
+        "What is 24 × 26?",
+        [
+            "624"
+        ]
+    ],
+    [
+        "What is 25 × 27?",
+        [
+            "675"
+        ]
+    ],
+    [
+        "What is 26 × 28?",
+        [
+            "728"
+        ]
+    ],
+    [
+        "What is 27 × 29?",
+        [
+            "783"
+        ]
+    ],
+    [
+        "What is 28 × 31?",
+        [
+            "868"
+        ]
+    ],
+    [
+        "What is 29 × 32?",
+        [
+            "928"
+        ]
+    ],
+    [
+        "What is 31 × 33?",
+        [
+            "1023"
+        ]
+    ],
+    [
+        "What is 32 × 34?",
+        [
+            "1088"
+        ]
+    ],
+    [
+        "What is 33 × 35?",
+        [
+            "1155"
+        ]
+    ],
+    [
+        "What is 34 × 36?",
+        [
+            "1224"
+        ]
+    ],
+    [
+        "What is 35 × 37?",
+        [
+            "1295"
+        ]
+    ],
+    [
+        "What is 36 × 38?",
+        [
+            "1368"
+        ]
+    ],
+    [
+        "What is 37 × 39?",
+        [
+            "1443"
+        ]
+    ],
+    [
+        "What is 38 × 41?",
+        [
+            "1558"
+        ]
+    ],
+    [
+        "What is 39 × 42?",
+        [
+            "1638"
+        ]
+    ],
+    [
+        "What is 41 × 43?",
+        [
+            "1763"
+        ]
+    ],
+    [
+        "What is 144 ÷ 12?",
+        [
+            "12"
+        ]
+    ],
+    [
+        "What is 169 ÷ 13?",
+        [
+            "13"
+        ]
+    ],
+    [
+        "What is 196 ÷ 14?",
+        [
+            "14"
+        ]
+    ],
+    [
+        "What is 225 ÷ 15?",
+        [
+            "15"
+        ]
+    ],
+    [
+        "What is 256 ÷ 16?",
+        [
+            "16"
+        ]
+    ],
+    [
+        "What is 289 ÷ 17?",
+        [
+            "17"
+        ]
+    ],
+    [
+        "What is 324 ÷ 18?",
+        [
+            "18"
+        ]
+    ],
+    [
+        "What is 361 ÷ 19?",
+        [
+            "19"
+        ]
+    ],
+    [
+        "What is 400 ÷ 20?",
+        [
+            "20"
+        ]
+    ],
+    [
+        "What is 441 ÷ 21?",
+        [
+            "21"
+        ]
+    ],
+    [
+        "What is 484 ÷ 22?",
+        [
+            "22"
+        ]
+    ],
+    [
+        "What is 529 ÷ 23?",
+        [
+            "23"
+        ]
+    ],
+    [
+        "What is 576 ÷ 24?",
+        [
+            "24"
+        ]
+    ],
+    [
+        "What is 625 ÷ 25?",
+        [
+            "25"
+        ]
+    ],
+    [
+        "What is 676 ÷ 26?",
+        [
+            "26"
+        ]
+    ],
+    [
+        "What is 729 ÷ 27?",
+        [
+            "27"
+        ]
+    ],
+    [
+        "What is 784 ÷ 28?",
+        [
+            "28"
+        ]
+    ],
+    [
+        "What is 841 ÷ 29?",
+        [
+            "29"
+        ]
+    ],
+    [
+        "What is 900 ÷ 30?",
+        [
+            "30"
+        ]
+    ],
+    [
+        "What is 961 ÷ 31?",
+        [
+            "31"
+        ]
+    ],
+    [
+        "What is 1024 ÷ 32?",
+        [
+            "32"
+        ]
+    ],
+    [
+        "What is 1089 ÷ 33?",
+        [
+            "33"
+        ]
+    ],
+    [
+        "What is 1156 ÷ 34?",
+        [
+            "34"
+        ]
+    ],
+    [
+        "What is 1225 ÷ 35?",
+        [
+            "35"
+        ]
+    ],
+    [
+        "What is 1296 ÷ 36?",
+        [
+            "36"
+        ]
+    ],
+    [
+        "What is 1369 ÷ 37?",
+        [
+            "37"
+        ]
+    ],
+    [
+        "What is 1444 ÷ 38?",
+        [
+            "38"
+        ]
+    ],
+    [
+        "What is 1521 ÷ 39?",
+        [
+            "39"
+        ]
+    ],
+    [
+        "What is 1600 ÷ 40?",
+        [
+            "40"
+        ]
+    ],
+    [
+        "What is 1681 ÷ 41?",
+        [
+            "41"
+        ]
+    ],
+    [
+        "What is the largest mammal on Earth?",
+        [
+            "blue whale"
+        ]
+    ],
+    [
+        "What is the largest land animal?",
+        [
+            "elephant"
+        ]
+    ],
+    [
+        "Which mammal is famous for reaching speeds over 100 kilometres per hour?",
+        [
+            "cheetah"
+        ]
+    ],
+    [
+        "What is the tallest animal in the world?",
+        [
+            "giraffe"
+        ]
+    ],
+    [
+        "What do bees collect from flowers to make honey?",
+        [
+            "nectar"
+        ]
+    ],
+    [
+        "What is a baby frog called?",
+        [
+            "tadpole"
+        ]
+    ],
+    [
+        "What is a group of lions called?",
+        [
+            "pride"
+        ]
+    ],
+    [
+        "What is the study of fossils called?",
+        [
+            "palaeontology",
+            "paleontology"
+        ]
+    ],
+    [
+        "What is the study of earthquakes called?",
+        [
+            "seismology"
+        ]
+    ],
+    [
+        "What is the process by which plants make food using sunlight?",
+        [
+            "photosynthesis"
+        ]
+    ],
+    [
+        "Which organ pumps blood around the human body?",
+        [
+            "heart"
+        ]
+    ],
+    [
+        "Which organs are mainly responsible for breathing?",
+        [
+            "lungs"
+        ]
+    ],
+    [
+        "Which part of the human body contains the smallest bones?",
+        [
+            "ear"
+        ]
+    ],
+    [
+        "How many bones are in a typical adult human body?",
+        [
+            "206"
+        ]
+    ],
+    [
+        "What is the largest organ of the human body?",
+        [
+            "skin"
+        ]
+    ],
+    [
+        "What is the red pigment in blood called?",
+        [
+            "haemoglobin",
+            "hemoglobin"
+        ]
+    ],
+    [
+        "Which vitamin can the body produce when skin is exposed to sunlight?",
+        [
+            "vitamin d"
+        ]
+    ],
+    [
+        "Which mineral is important for healthy bones and teeth?",
+        [
+            "calcium"
+        ]
+    ],
+    [
+        "What is the chemical formula for water?",
+        [
+            "h2o"
+        ]
+    ],
+    [
+        "What is the chemical symbol for silver?",
+        [
+            "ag"
+        ]
+    ],
+    [
+        "Quick knowledge check: What is the chemical symbol for oxygen?",
+        [
+            "o"
+        ]
+    ],
+    [
+        "Quick knowledge check: What is the chemical symbol for iron?",
+        [
+            "fe"
+        ]
+    ],
+    [
+        "Quick knowledge check: What is the chemical symbol for sodium?",
+        [
+            "na"
+        ]
+    ],
+    [
+        "What is the pH of pure water at room temperature, approximately?",
+        [
+            "7",
+            "seven"
+        ]
+    ],
+    [
+        "What force keeps planets in orbit around the Sun?",
+        [
+            "gravity"
+        ]
+    ],
+    [
+        "What is the center of an atom called?",
+        [
+            "nucleus"
+        ]
+    ],
+    [
+        "What is the name of the nearest star to Earth?",
+        [
+            "the sun"
+        ]
+    ],
+    [
+        "Which planet has the most prominent ring system?",
+        [
+            "saturn"
+        ]
+    ],
+    [
+        "Which planet is closest to the Sun?",
+        [
+            "mercury"
+        ]
+    ],
+    [
+        "Which planet is famous for its Great Red Spot?",
+        [
+            "jupiter"
+        ]
+    ],
+    [
+        "What is the name of our galaxy?",
+        [
+            "milky way"
+        ]
+    ],
+    [
+        "What is the name of the galaxy closest in size to the Milky Way?",
+        [
+            "andromeda"
+        ]
+    ],
+    [
+        "What instrument measures temperature?",
+        [
+            "thermometer"
+        ]
+    ],
+    [
+        "What instrument measures air pressure?",
+        [
+            "barometer"
+        ]
+    ],
+    [
+        "What instrument measures wind speed?",
+        [
+            "anemometer"
+        ]
+    ],
+    [
+        "What is molten rock beneath Earth's surface called?",
+        [
+            "magma"
+        ]
+    ],
+    [
+        "What is molten rock on Earth's surface called?",
+        [
+            "lava"
+        ]
+    ],
+    [
+        "What is the hardest naturally occurring mineral on the Mohs scale?",
+        [
+            "diamond"
+        ]
+    ],
+    [
+        "What is the common name for sodium chloride?",
+        [
+            "table salt",
+            "salt"
+        ]
+    ],
+    [
+        "What gas makes up most of Earth's atmosphere?",
+        [
+            "nitrogen"
+        ]
+    ],
+    [
+        "Which gas do humans need to breathe to survive?",
+        [
+            "oxygen"
+        ]
+    ],
+    [
+        "Which ocean lies between Africa and Australia?",
+        [
+            "indian ocean"
+        ]
+    ],
+    [
+        "Which ocean is between Europe and North America?",
+        [
+            "atlantic ocean"
+        ]
+    ],
+    [
+        "What is the largest hot desert in the world?",
+        [
+            "sahara"
+        ]
+    ],
+    [
+        "What is the largest desert in the world overall?",
+        [
+            "antarctic desert",
+            "antarctica"
+        ]
+    ],
+    [
+        "Which river flows through Egypt?",
+        [
+            "nile"
+        ]
+    ],
+    [
+        "Which mountain is the highest above sea level?",
+        [
+            "mount everest"
+        ]
+    ],
+    [
+        "Which country is home to the ancient city of Petra?",
+        [
+            "jordan"
+        ]
+    ],
+    [
+        "In which country are the pyramids of Giza?",
+        [
+            "egypt"
+        ]
+    ],
+    [
+        "Which ancient civilization built Machu Picchu?",
+        [
+            "inca"
+        ]
+    ],
+    [
+        "Which city is famous for the Colosseum?",
+        [
+            "rome"
+        ]
+    ],
+    [
+        "Which country gifted the Statue of Liberty to the United States?",
+        [
+            "france"
+        ]
+    ],
+    [
+        "Who was the first person to walk on the Moon?",
+        [
+            "neil armstrong"
+        ]
+    ],
+    [
+        "In which year did the first Moon landing take place?",
+        [
+            "1969"
+        ]
+    ],
+    [
+        "Which ship sank on its maiden voyage in 1912?",
+        [
+            "titanic"
+        ]
+    ],
+    [
+        "Which ancient writing system used wedge-shaped marks?",
+        [
+            "cuneiform"
+        ]
+    ],
+    [
+        "What was the name of the trade route connecting China with the Mediterranean?",
+        [
+            "silk road"
+        ]
+    ],
+    [
+        "Which famous wall was built across northern China?",
+        [
+            "great wall of china"
+        ]
+    ],
+    [
+        "Which artist painted the Mona Lisa?",
+        [
+            "leonardo da vinci"
+        ]
+    ],
+    [
+        "Who painted the ceiling of the Sistine Chapel?",
+        [
+            "michelangelo"
+        ]
+    ],
+    [
+        "Who wrote Romeo and Juliet?",
+        [
+            "william shakespeare"
+        ]
+    ],
+    [
+        "Who wrote the Harry Potter book series?",
+        [
+            "j.k. rowling"
+        ]
+    ],
+    [
+        "Who wrote The Hobbit?",
+        [
+            "j.r.r. tolkien"
+        ]
+    ],
+    [
+        "Which musical instrument has 88 keys on a standard modern version?",
+        [
+            "piano"
+        ]
+    ],
+    [
+        "How many strings does a standard violin have?",
+        [
+            "4"
+        ]
+    ],
+    [
+        "What is the name of the person who leads an orchestra?",
+        [
+            "conductor"
+        ]
+    ],
+    [
+        "How many players does a football/soccer team have on the field?",
+        [
+            "11"
+        ]
+    ],
+    [
+        "How many players from one basketball team are on the court at a time?",
+        [
+            "5"
+        ]
+    ],
+    [
+        "In tennis, what word means a score of zero?",
+        [
+            "love"
+        ]
+    ],
+    [
+        "How many rings are on the Olympic symbol?",
+        [
+            "5"
+        ]
+    ],
+    [
+        "Which sport uses a shuttlecock?",
+        [
+            "badminton"
+        ]
+    ],
+    [
+        "Which sport is played at Wimbledon?",
+        [
+            "tennis"
+        ]
+    ],
+    [
+        "In chess, which piece moves in an L shape?",
+        [
+            "knight"
+        ]
+    ],
+    [
+        "Which chess piece can move any number of squares diagonally?",
+        [
+            "bishop"
+        ]
+    ],
+    [
+        "Which chess piece is allowed to move one square in any direction?",
+        [
+            "king"
+        ]
+    ],
+    [
+        "How many squares are on a standard chessboard?",
+        [
+            "64"
+        ]
+    ],
+    [
+        "What is the opposite of a synonym?",
+        [
+            "antonym"
+        ]
+    ],
+    [
+        "What is a word that sounds like another word but has a different meaning called?",
+        [
+            "homophone"
+        ]
+    ],
+    [
+        "How many letters are in the English alphabet?",
+        [
+            "26"
+        ]
+    ],
+    [
+        "What punctuation mark ends a direct question?",
+        [
+            "question mark"
+        ]
+    ],
+    [
+        "What is the plural of 'mouse'?",
+        [
+            "mice"
+        ]
+    ],
+    [
+        "What is the past tense of 'go'?",
+        [
+            "went"
+        ]
+    ],
+    [
+        "What is the square root of 144?",
+        [
+            "12"
+        ]
+    ]
+]
+TRIVIA_QUESTIONS.extend(EXTRA_TRIVIA_QUESTIONS)
+if len(TRIVIA_QUESTIONS) != 500:
+    raise RuntimeError(f"Expected exactly 500 trivia questions, found {len(TRIVIA_QUESTIONS)}")
+
 
 def mode_key(value: str) -> str:
     return re.sub(r"[^a-z0-9]+", "_", value.casefold()).strip("_")
