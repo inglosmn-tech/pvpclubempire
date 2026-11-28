@@ -1076,14 +1076,9 @@ class SecurityCog(commands.Cog):
                     try:
                         member = await guild.fetch_member(int(item["member_id"]))
                     except discord.NotFound:
-                        await pool.execute(
-                            "DELETE FROM pvpclub_active_quarantines WHERE guild_id=$1 AND member_id=$2 AND scope='bot'",
-                            guild.id, int(item["member_id"]),
-                        )
-                        await pool.execute(
-                            "DELETE FROM pvpclub_quarantine_overwrites WHERE guild_id=$1 AND member_id=$2 AND scope='bot'",
-                            guild.id, int(item["member_id"]),
-                        )
+                        # Keep backups so a bot that rejoins can have stale
+                        # member-specific quarantine overwrites restored.
+                        continue
                         continue
                     except discord.HTTPException:
                         continue
